@@ -1,0 +1,21 @@
+# Spanish Learning Assistant Configuration
+# Copy this file to config.yaml and adjust settings as needed.
+# Environment variables take precedence over this file.
+
+# LLM provider to use: "ollama" or "bedrock"
+llm_provider: ollama
+
+# Ollama configuration
+ollama:
+  base_url: http://localhost:11434
+  model: llama3
+
+# Amazon Bedrock configuration
+# Note: AWS credentials must be set via environment variables for security
+bedrock:
+  model_id: anthropic.claude-3-sonnet-20240229-v1:0
+  region: us-east-1
+
+# Learning settings
+# CEFR level filter: "all", "A1", "A2", "B1", "B2", "C1", "C2"
+cefr_level: all
