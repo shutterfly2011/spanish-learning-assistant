@@ -41,8 +41,7 @@ A web-based Spanish vocabulary learning tool powered by LLMs. Enter Spanish word
 
    # For Bedrock (optional)
    # LLM_PROVIDER=bedrock
-   # AWS_ACCESS_KEY_ID=your-key
-   # AWS_SECRET_ACCESS_KEY=your-secret
+   # AWS_BEARER_TOKEN_BEDROCK=your-api-key
    ```
 
 4. Start the application:
@@ -82,17 +81,16 @@ A web-based Spanish vocabulary learning tool powered by LLMs. Enter Spanish word
 | `LLM_PROVIDER` | LLM backend: `ollama` or `bedrock` | `ollama` |
 | `OLLAMA_BASE_URL` | Ollama server URL | `http://localhost:11434` |
 | `OLLAMA_MODEL` | Ollama model name | `llama3` |
-| `AWS_ACCESS_KEY_ID` | AWS access key (for Bedrock) | - |
-| `AWS_SECRET_ACCESS_KEY` | AWS secret key (for Bedrock) | - |
+| `AWS_BEARER_TOKEN_BEDROCK` | Bedrock API key | - |
 | `AWS_REGION` | AWS region | `us-east-1` |
-| `BEDROCK_MODEL_ID` | Bedrock model ID | `anthropic.claude-3-sonnet-20240229-v1:0` |
+| `BEDROCK_MODEL_ID` | Bedrock model ID | `us.anthropic.claude-3-5-sonnet-20241022-v2:0` |
 
 ### UI Settings
 
 Click the **Settings** button in the app to configure:
 - LLM provider and model
 - Ollama server URL
-- Bedrock model ID and region
+- Bedrock API key, model ID, and region
 - CEFR level filter (A1-C2)
 
 Settings changed in the UI persist for the session only.
@@ -166,10 +164,12 @@ Any model available on your Ollama server can be used. Recommended models:
 
 ## Supported Bedrock Models
 
-Claude models available on Amazon Bedrock:
-- `anthropic.claude-3-sonnet-20240229-v1:0`
-- `anthropic.claude-3-haiku-20240307-v1:0`
-- `anthropic.claude-3-opus-20240229-v1:0`
+Claude models available on Amazon Bedrock (use cross-region inference IDs):
+- `us.anthropic.claude-3-5-sonnet-20241022-v2:0`
+- `us.anthropic.claude-3-5-haiku-20241022-v1:0`
+- `us.anthropic.claude-3-opus-20240229-v1:0`
+
+To use Bedrock, generate an API key from the [AWS Bedrock console](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys.html).
 
 ## License
 

@@ -11,9 +11,9 @@ ollama:
   model: llama3
 
 # Amazon Bedrock configuration
-# Note: AWS credentials must be set via environment variables for security
+# Note: API key must be set via environment variable (AWS_BEARER_TOKEN_BEDROCK) or in the UI
 bedrock:
-  model_id: anthropic.claude-3-sonnet-20240229-v1:0
+  model_id: us.anthropic.claude-3-5-sonnet-20241022-v2:0
   region: us-east-1
 
 # Learning settings

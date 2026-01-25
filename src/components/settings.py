@@ -1,6 +1,5 @@
 import streamlit as st
 
-from config import has_aws_credentials
 from session_state import update_llm_settings
 from llm import OllamaClient
 
@@ -21,13 +20,23 @@ def render_settings_dialog():
     """Render the settings dialog."""
     st.subheader("LLM Configuration")
 
-    # Provider selection
-    provider = st.selectbox(
-        "LLM Provider",
-        options=["ollama", "bedrock"],
-        index=0 if st.session_state.llm_provider == "ollama" else 1,
-        key="settings_provider",
-    )
+    # Provider selection with checkboxes
+    st.write("**Select LLM Provider(s)**")
+    st.caption("Select both to compare responses side-by-side")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        use_ollama = st.checkbox(
+            "Ollama",
+            value=st.session_state.use_ollama,
+            key="settings_use_ollama",
+        )
+    with col2:
+        use_bedrock = st.checkbox(
+            "Bedrock",
+            value=st.session_state.use_bedrock,
+            key="settings_use_bedrock",
+        )
 
     st.divider()
 
@@ -61,17 +70,11 @@ def render_settings_dialog():
     # Bedrock settings
     st.subheader("Bedrock Settings")
 
-    if not has_aws_credentials():
-        st.warning(
-            "AWS credentials not found. Set AWS_ACCESS_KEY_ID and "
-            "AWS_SECRET_ACCESS_KEY environment variables to use Bedrock."
-        )
-
     bedrock_model_id = st.text_input(
         "Bedrock Model ID",
         value=st.session_state.bedrock_model_id,
         key="settings_bedrock_model",
-        help="Claude model ID (e.g., anthropic.claude-3-sonnet-20240229-v1:0)",
+        help="Claude model ID (e.g., us.anthropic.claude-3-5-sonnet-20241022-v2:0)",
     )
     bedrock_region = st.selectbox(
         "AWS Region",
@@ -102,8 +105,14 @@ def render_settings_dialog():
     col1, col2 = st.columns(2)
     with col1:
         if st.button("Save", type="primary", use_container_width=True):
+            # Validate at least one provider is selected
+            if not use_ollama and not use_bedrock:
+                st.error("Please select at least one LLM provider")
+                return
+
             update_llm_settings(
-                provider=provider,
+                use_ollama=use_ollama,
+                use_bedrock=use_bedrock,
                 ollama_base_url=ollama_base_url,
                 ollama_model=ollama_model,
                 bedrock_model_id=bedrock_model_id,

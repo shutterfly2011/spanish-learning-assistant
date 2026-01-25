@@ -1,66 +1,68 @@
-import json
 import os
-from typing import Generator
+from typing import Generator, Optional
 
-from .base import LLMClient
+from llm.base import LLMClient
 
 
 class BedrockClient(LLMClient):
-    """Amazon Bedrock LLM client for Claude models."""
+    """Amazon Bedrock LLM client for Claude models using API key authentication."""
 
     def __init__(
         self,
-        model_id: str = "anthropic.claude-3-sonnet-20240229-v1:0",
+        model_id: str = "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
         region: str = "us-east-1",
+        api_key: Optional[str] = None,
     ):
         self.model_id = model_id
         self.region = region
+        # Use provided API key or fall back to environment variable
+        self.api_key = api_key or os.getenv("AWS_BEARER_TOKEN_BEDROCK")
         self._client = None
 
     def _get_client(self):
-        """Lazy initialization of boto3 client."""
+        """Lazy initialization of boto3 client with API key authentication."""
         if self._client is None:
             import boto3
+
+            # Set the bearer token environment variable for boto3
+            if self.api_key:
+                os.environ["AWS_BEARER_TOKEN_BEDROCK"] = self.api_key
 
             self._client = boto3.client(
                 "bedrock-runtime",
                 region_name=self.region,
-                aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-                aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
             )
         return self._client
 
     def chat(self, messages: list[dict], system_prompt: str = "") -> str:
-        """Send messages to Bedrock and get a complete response."""
+        """Send messages to Bedrock and get a complete response using the Converse API."""
         client = self._get_client()
 
-        # Format messages for Claude on Bedrock
+        # Format messages for the Converse API
         formatted_messages = []
         for msg in messages:
             formatted_messages.append({
                 "role": msg["role"],
-                "content": [{"type": "text", "text": msg["content"]}]
+                "content": [{"text": msg["content"]}]
             })
 
-        body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 4096,
+        # Build the request
+        request = {
+            "modelId": self.model_id,
             "messages": formatted_messages,
         }
 
         if system_prompt:
-            body["system"] = system_prompt
+            request["system"] = [{"text": system_prompt}]
 
         try:
-            response = client.invoke_model(
-                modelId=self.model_id,
-                body=json.dumps(body),
-                contentType="application/json",
-                accept="application/json",
-            )
+            response = client.converse(**request)
 
-            response_body = json.loads(response["body"].read())
-            content = response_body.get("content", [])
+            # Extract the response text
+            output = response.get("output", {})
+            message = output.get("message", {})
+            content = message.get("content", [])
+
             if content and len(content) > 0:
                 return content[0].get("text", "")
             return ""
@@ -71,57 +73,45 @@ class BedrockClient(LLMClient):
     def chat_stream(
         self, messages: list[dict], system_prompt: str = ""
     ) -> Generator[str, None, None]:
-        """Stream messages from Bedrock."""
+        """Stream messages from Bedrock using the Converse Stream API."""
         client = self._get_client()
 
-        # Format messages for Claude on Bedrock
+        # Format messages for the Converse API
         formatted_messages = []
         for msg in messages:
             formatted_messages.append({
                 "role": msg["role"],
-                "content": [{"type": "text", "text": msg["content"]}]
+                "content": [{"text": msg["content"]}]
             })
 
-        body = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 4096,
+        # Build the request
+        request = {
+            "modelId": self.model_id,
             "messages": formatted_messages,
         }
 
         if system_prompt:
-            body["system"] = system_prompt
+            request["system"] = [{"text": system_prompt}]
 
         try:
-            response = client.invoke_model_with_response_stream(
-                modelId=self.model_id,
-                body=json.dumps(body),
-                contentType="application/json",
-                accept="application/json",
-            )
+            response = client.converse_stream(**request)
 
-            for event in response.get("body", []):
-                chunk = event.get("chunk")
-                if chunk:
-                    chunk_data = json.loads(chunk.get("bytes", b"{}").decode())
-                    if chunk_data.get("type") == "content_block_delta":
-                        delta = chunk_data.get("delta", {})
-                        text = delta.get("text", "")
-                        if text:
-                            yield text
+            for event in response.get("stream", []):
+                if "contentBlockDelta" in event:
+                    delta = event["contentBlockDelta"].get("delta", {})
+                    text = delta.get("text", "")
+                    if text:
+                        yield text
 
         except Exception as e:
             raise ConnectionError(f"Failed to stream from Bedrock: {e}")
 
     def is_available(self) -> bool:
-        """Check if Bedrock is available (credentials are set)."""
-        access_key = os.getenv("AWS_ACCESS_KEY_ID")
-        secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
-
-        if not access_key or not secret_key:
+        """Check if Bedrock is available (API key is set)."""
+        if not self.api_key:
             return False
 
         try:
-            # Try to initialize the client
             self._get_client()
             return True
         except Exception:

@@ -26,9 +26,10 @@ ENV/
 env/
 .venv/
 
-# Environment variables
+# Environment variables and user settings
 .env
 config.yaml
+user_settings.json
 
 # IDE
 .idea/

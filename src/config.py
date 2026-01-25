@@ -17,7 +17,7 @@ class OllamaConfig:
 
 @dataclass
 class BedrockConfig:
-    model_id: str = "anthropic.claude-3-sonnet-20240229-v1:0"
+    model_id: str = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
     region: str = "us-east-1"
 
 
@@ -64,7 +64,7 @@ def load_config() -> AppConfig:
     bedrock_config = BedrockConfig(
         model_id=os.getenv(
             "BEDROCK_MODEL_ID",
-            yaml_config.get("bedrock", {}).get("model_id", "anthropic.claude-3-sonnet-20240229-v1:0")
+            yaml_config.get("bedrock", {}).get("model_id", "us.anthropic.claude-3-5-sonnet-20241022-v2:0")
         ),
         region=os.getenv(
             "AWS_REGION",
