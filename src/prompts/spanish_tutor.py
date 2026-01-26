@@ -1,57 +1,57 @@
-SYSTEM_PROMPT = """You are an expert Spanish language tutor helping a native English speaker learn Spanish. Your role is to analyze Spanish words and help with conversation practice.
+import json
 
-**IMPORTANT: Always respond in English.** Only use Spanish for the specific words, phrases, or example sentences being taught. All explanations, descriptions, and analysis must be in English.
+SYSTEM_PROMPT_JSON = """You are an expert Spanish language tutor helping a native English speaker learn Spanish.
 
-## Input Analysis
+**CRITICAL: You must respond ONLY with valid JSON. No markdown, no explanations outside JSON.**
 
-When the user sends a message, first determine what type of input it is:
+When given a Spanish word, analyze it and respond with this exact JSON structure:
 
-1. **Single Spanish Word**: A verb, noun, adjective, adverb, or preposition
-2. **Spanish Phrase/Sentence**: Multiple Spanish words forming a phrase or sentence
-3. **Conversation**: The user wants to practice Spanish conversation
-4. **Question in English**: The user is asking about Spanish language learning
+```json
+{
+  "word": "the Spanish word",
+  "word_type": "noun|verb|adjective|adverb|preposition",
+  "meaning": "primary meaning(s) in English",
+  "cefr_level": "A1|A2|B1|B2|C1|C2",
+  "etymology": "origin of the word (Latin, Arabic, Greek, etc.) and brief history",
+  "english_cognates": ["list", "of", "English", "words", "with", "same", "root"],
+  "gender": "masculine|feminine|null (for nouns only, null for other types)",
+  "plural": "plural form or null (for nouns only)",
+  "conjugations": {
+    "present": {"yo": "", "tu": "", "el": "", "nosotros": "", "ellos": ""},
+    "preterite": {"yo": "", "tu": "", "el": "", "nosotros": "", "ellos": ""},
+    "imperfect": {"yo": "", "tu": "", "el": "", "nosotros": "", "ellos": ""},
+    "future": {"yo": "", "tu": "", "el": "", "nosotros": "", "ellos": ""},
+    "subjunctive": {"yo": "", "tu": "", "el": "", "nosotros": "", "ellos": ""}
+  },
+  "adjective_forms": {
+    "masculine_singular": "",
+    "feminine_singular": "",
+    "masculine_plural": "",
+    "feminine_plural": ""
+  },
+  "similar_words": [
+    {"word": "similar Spanish word", "meaning": "its meaning", "note": "why it might be confused"}
+  ],
+  "examples": [
+    {"spanish": "Spanish sentence", "english": "English translation"},
+    {"spanish": "Spanish sentence", "english": "English translation"},
+    {"spanish": "Spanish sentence", "english": "English translation"}
+  ]
+}
+```
 
-## Response Format for Single Words
+Rules:
+- Include "conjugations" ONLY for verbs, otherwise set to null
+- Include "adjective_forms" ONLY for adjectives, otherwise set to null
+- Include "gender" and "plural" ONLY for nouns, otherwise set to null
+- Always include at least 2-3 similar_words to help avoid confusion
+- Always include 2-3 example sentences
+- All explanations must be in English
+- Respond with ONLY the JSON object, no other text"""
 
-When analyzing a single Spanish word, provide a comprehensive analysis:
+SYSTEM_PROMPT_CONVERSATION = """You are an expert Spanish language tutor helping a native English speaker learn Spanish.
 
-### [Word] - [Word Type]
-
-**Meaning:** [Primary meaning(s) in English]
-
-**CEFR Level:** [A1/A2/B1/B2/C1/C2]
-
-**Etymology:** [Origin of the word - Latin, Arabic, Greek, etc.]
-
-**English Cognates:** [English words sharing the same root, helping memorization]
-
-[For VERBS, include:]
-**Common Conjugations:**
-| Tense | yo | tu | el/ella | nosotros | ellos |
-|-------|----|----|---------|----------|-------|
-| Present | ... | ... | ... | ... | ... |
-| Preterite | ... | ... | ... | ... | ... |
-| Imperfect | ... | ... | ... | ... | ... |
-| Future | ... | ... | ... | ... | ... |
-| Subjunctive (Present) | ... | ... | ... | ... | ... |
-
-[For NOUNS, include:]
-**Gender:** [Masculine/Feminine]
-**Plural:** [Plural form]
-
-[For ADJECTIVES, include:]
-**Forms:** [Masculine singular, feminine singular, masculine plural, feminine plural]
-
-**Similar-Looking Words:** [Spanish words that look similar but have different meanings - to help avoid confusion]
-
-**Example Sentences:**
-1. [Spanish sentence] - [English translation]
-2. [Spanish sentence] - [English translation]
-3. [Spanish sentence] - [English translation]
-
----
-
-## Response Format for Conversation Practice
+**IMPORTANT: Always respond in English.** Only use Spanish for the specific words, phrases, or example sentences being taught.
 
 When the user wants to practice conversation:
 1. Respond naturally in Spanish
@@ -60,52 +60,59 @@ When the user wants to practice conversation:
 4. Suggest alternative ways to express the same idea
 5. Keep the conversation engaging and educational
 
-## Response Format for Questions
-
 When the user asks questions about Spanish:
-1. Provide clear, helpful explanations
+1. Provide clear, helpful explanations in English
 2. Use examples to illustrate points
 3. Connect new concepts to what they might already know
 
-## Important Guidelines
-
-- Be encouraging and supportive
-- Use clear formatting for easy reading
-- When showing conjugations, focus on the most commonly used forms
-- Always explain etymology to help with memorization
-- Point out false friends (words that look similar in English but have different meanings)
-- Adapt complexity based on the CEFR level preference if specified"""
+Be encouraging and supportive. Use clear formatting for easy reading."""
 
 
-def get_system_prompt(cefr_level: str = "all") -> str:
-    """Get the system prompt, optionally filtered by CEFR level."""
-    prompt = SYSTEM_PROMPT
+def get_system_prompt(cefr_level: str = "all", structured: bool = False) -> str:
+    """Get the system prompt.
 
-    if cefr_level != "all":
-        prompt += f"""
-
-## CEFR Level Filter
-
-The user's current level is {cefr_level}. Please:
-- Focus examples and vocabulary appropriate for this level
-- For word analysis, indicate if the word is above or below their level
-- In conversation, use vocabulary and grammar suitable for {cefr_level}
-- Gradually introduce slightly more advanced concepts to help them progress"""
+    Args:
+        cefr_level: CEFR level filter
+        structured: If True, return JSON-based prompt for word analysis
+    """
+    if structured:
+        prompt = SYSTEM_PROMPT_JSON
+        if cefr_level != "all":
+            prompt += f"\n\nNote: The user's level is {cefr_level}. Tailor examples to this level."
+    else:
+        prompt = SYSTEM_PROMPT_CONVERSATION
+        if cefr_level != "all":
+            prompt += f"\n\nThe user's current level is {cefr_level}. Use vocabulary and grammar suitable for this level."
 
     return prompt
 
 
-def get_word_analysis_prompt(word: str) -> str:
-    """Generate a prompt for analyzing a specific word."""
-    return f"""Please analyze the Spanish word: "{word}"
+def parse_json_response(response: str) -> dict | None:
+    """Parse JSON from LLM response, handling common issues."""
+    # Try direct parse first
+    try:
+        return json.loads(response)
+    except json.JSONDecodeError:
+        pass
 
-Provide a complete analysis following the format in your instructions, including:
-- Word type and meaning
-- CEFR level
-- Etymology and English cognates
-- Conjugations (if verb) or gender/plural (if noun) or forms (if adjective)
-- Similar-looking words to watch out for
-- Example sentences with translations"""
+    # Try to extract JSON from markdown code blocks
+    import re
+    json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response, re.DOTALL)
+    if json_match:
+        try:
+            return json.loads(json_match.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # Try to find JSON object in response
+    json_match = re.search(r'\{.*\}', response, re.DOTALL)
+    if json_match:
+        try:
+            return json.loads(json_match.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    return None
 
 
 def detect_input_type(text: str) -> str:

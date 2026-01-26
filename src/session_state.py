@@ -126,11 +126,12 @@ def update_llm_settings(
         save_settings_to_file()
 
 
-def add_message(role: str, content: str, ollama_content: str = None, bedrock_content: str = None):
+def add_message(role: str, content: str, ollama_content: str = None, bedrock_content: str = None, is_structured: bool = False):
     """Add a message to chat history.
 
     For user messages, only content is used.
     For assistant messages, ollama_content and bedrock_content store provider-specific responses.
+    is_structured indicates if the response is structured JSON for word analysis.
     """
     msg = {
         "role": role,
@@ -140,6 +141,7 @@ def add_message(role: str, content: str, ollama_content: str = None, bedrock_con
     if role == "assistant":
         msg["ollama_content"] = ollama_content
         msg["bedrock_content"] = bedrock_content
+        msg["is_structured"] = is_structured
     st.session_state.messages.append(msg)
 
 
