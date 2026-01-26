@@ -38,201 +38,163 @@ def query_llm(client, messages, system_prompt):
 
 
 def format_value(val, fallback="N/A"):
-    """Format a value for display, escaping HTML."""
+    """Format a value for display."""
     if val is None:
         return fallback
     if isinstance(val, list):
         return ", ".join(str(v) for v in val) if val else fallback
-    return str(val).replace("<", "&lt;").replace(">", "&gt;")
+    return str(val)
 
 
-def build_comparison_table(rows: list[tuple[str, str, str]]) -> str:
-    """Build an HTML table for side-by-side comparison.
-
-    Args:
-        rows: List of (label, ollama_value, bedrock_value) tuples
-    """
-    html = """
-    <style>
-    .comparison-table {
-        width: 100%;
-        border-collapse: collapse;
-        margin: 10px 0;
-    }
-    .comparison-table th, .comparison-table td {
-        border: 1px solid #ddd;
-        padding: 10px;
-        text-align: left;
-        vertical-align: top;
-    }
-    .comparison-table th {
-        background-color: #f5f5f5;
-        font-weight: bold;
-    }
-    .comparison-table th.provider {
-        width: 40%;
-    }
-    .comparison-table th.label {
-        width: 20%;
-    }
-    .comparison-table tr:nth-child(even) {
-        background-color: #fafafa;
-    }
-    </style>
-    <table class="comparison-table">
-    <thead>
-        <tr>
-            <th class="label">Field</th>
-            <th class="provider">Ollama</th>
-            <th class="provider">Bedrock</th>
-        </tr>
-    </thead>
-    <tbody>
-    """
-
-    for label, ollama_val, bedrock_val in rows:
-        html += f"""
-        <tr>
-            <td><strong>{label}</strong></td>
-            <td>{ollama_val}</td>
-            <td>{bedrock_val}</td>
-        </tr>
-        """
-
-    html += "</tbody></table>"
-    return html
-
-
-def format_conjugations_html(conjugations: dict | None) -> str:
-    """Format conjugations as HTML mini-table."""
+def format_conjugations(conjugations: dict | None) -> str:
+    """Format conjugations as markdown text."""
     if not conjugations:
-        return "<em>N/A</em>"
+        return "*N/A*"
 
-    html = "<table style='font-size: 0.9em; border-collapse: collapse;'>"
-    html += "<tr style='background: #f0f0f0;'><th style='padding: 3px 6px;'>Tense</th><th>yo</th><th>tú</th><th>él</th><th>nosotros</th><th>ellos</th></tr>"
-
+    lines = []
     for tense, forms in conjugations.items():
         if forms:
-            html += f"<tr><td style='padding: 3px 6px;'><em>{tense}</em></td>"
-            html += f"<td style='padding: 3px 6px;'>{forms.get('yo', '-')}</td>"
-            html += f"<td style='padding: 3px 6px;'>{forms.get('tu', '-')}</td>"
-            html += f"<td style='padding: 3px 6px;'>{forms.get('el', '-')}</td>"
-            html += f"<td style='padding: 3px 6px;'>{forms.get('nosotros', '-')}</td>"
-            html += f"<td style='padding: 3px 6px;'>{forms.get('ellos', '-')}</td></tr>"
+            line = f"**{tense.title()}:** "
+            parts = []
+            for person, form in forms.items():
+                if form:
+                    parts.append(f"{person}: {form}")
+            line += ", ".join(parts)
+            lines.append(line)
+    return "\n".join(lines) if lines else "*N/A*"
 
-    html += "</table>"
-    return html
 
-
-def format_adjective_forms_html(forms: dict | None) -> str:
-    """Format adjective forms as HTML."""
+def format_adjective_forms(forms: dict | None) -> str:
+    """Format adjective forms as markdown text."""
     if not forms:
-        return "<em>N/A</em>"
+        return "*N/A*"
 
-    return f"""
-    <ul style='margin: 0; padding-left: 20px;'>
-        <li>Masc. Sing.: {forms.get('masculine_singular', '-')}</li>
-        <li>Fem. Sing.: {forms.get('feminine_singular', '-')}</li>
-        <li>Masc. Plur.: {forms.get('masculine_plural', '-')}</li>
-        <li>Fem. Plur.: {forms.get('feminine_plural', '-')}</li>
-    </ul>
-    """
+    lines = [
+        f"- Masc. Sing.: {forms.get('masculine_singular', '-')}",
+        f"- Fem. Sing.: {forms.get('feminine_singular', '-')}",
+        f"- Masc. Plur.: {forms.get('masculine_plural', '-')}",
+        f"- Fem. Plur.: {forms.get('feminine_plural', '-')}",
+    ]
+    return "\n".join(lines)
 
 
-def format_similar_words_html(similar_words: list | None) -> str:
-    """Format similar words as HTML."""
+def format_similar_words(similar_words: list | None) -> str:
+    """Format similar words as markdown text."""
     if not similar_words:
-        return "<em>None provided</em>"
+        return "*None provided*"
 
-    html = "<ul style='margin: 0; padding-left: 20px;'>"
+    lines = []
     for item in similar_words:
         if isinstance(item, dict):
             word = item.get('word', '-')
             meaning = item.get('meaning', '-')
             note = item.get('note', '')
-            html += f"<li><strong>{word}</strong>: {meaning}"
+            line = f"- **{word}**: {meaning}"
             if note:
-                html += f" <em>({note})</em>"
-            html += "</li>"
-    html += "</ul>"
-    return html
+                line += f" *({note})*"
+            lines.append(line)
+    return "\n".join(lines) if lines else "*None provided*"
 
 
-def format_examples_html(examples: list | None) -> str:
-    """Format examples as HTML."""
+def format_examples(examples: list | None) -> str:
+    """Format examples as markdown text."""
     if not examples:
-        return "<em>None provided</em>"
+        return "*None provided*"
 
-    html = "<ol style='margin: 0; padding-left: 20px;'>"
-    for ex in examples:
+    lines = []
+    for i, ex in enumerate(examples, 1):
         if isinstance(ex, dict):
             spanish = ex.get('spanish', '')
             english = ex.get('english', '')
-            html += f"<li><strong>{spanish}</strong><br/><em>{english}</em></li>"
+            lines.append(f"{i}. **{spanish}**")
+            lines.append(f"   *{english}*")
         else:
-            html += f"<li>{ex}</li>"
-    html += "</ol>"
-    return html
+            lines.append(f"{i}. {ex}")
+    return "\n".join(lines) if lines else "*None provided*"
+
+
+def render_comparison_row(label: str, ollama_val: str, bedrock_val: str):
+    """Render a single comparison row with label and two columns."""
+    st.markdown(f"**{label}**")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown(ollama_val)
+    with col2:
+        st.markdown(bedrock_val)
+    st.divider()
 
 
 def display_structured_comparison(ollama_data: dict | None, bedrock_data: dict | None):
-    """Display structured JSON data from both providers in an aligned HTML table."""
+    """Display structured JSON data from both providers side by side."""
     ollama_data = ollama_data or {}
     bedrock_data = bedrock_data or {}
 
-    # Build rows for the comparison table
-    rows = []
+    # Header
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("### Ollama")
+    with col2:
+        st.markdown("### Bedrock")
+    st.divider()
 
     # Word & Type
-    ollama_word = f"<strong style='font-size: 1.2em;'>{ollama_data.get('word', 'N/A')}</strong> ({ollama_data.get('word_type', 'N/A')})"
-    bedrock_word = f"<strong style='font-size: 1.2em;'>{bedrock_data.get('word', 'N/A')}</strong> ({bedrock_data.get('word_type', 'N/A')})"
-    rows.append(("Word & Type", ollama_word, bedrock_word))
+    ollama_word = f"**{ollama_data.get('word', 'N/A')}** ({ollama_data.get('word_type', 'N/A')})"
+    bedrock_word = f"**{bedrock_data.get('word', 'N/A')}** ({bedrock_data.get('word_type', 'N/A')})"
+    render_comparison_row("Word & Type", ollama_word, bedrock_word)
 
     # Meaning
-    rows.append(("Meaning", format_value(ollama_data.get('meaning')), format_value(bedrock_data.get('meaning'))))
+    render_comparison_row("Meaning",
+                         format_value(ollama_data.get('meaning')),
+                         format_value(bedrock_data.get('meaning')))
 
     # CEFR Level
-    rows.append(("CEFR Level", format_value(ollama_data.get('cefr_level')), format_value(bedrock_data.get('cefr_level'))))
+    render_comparison_row("CEFR Level",
+                         format_value(ollama_data.get('cefr_level')),
+                         format_value(bedrock_data.get('cefr_level')))
 
     # Etymology
-    rows.append(("Etymology", format_value(ollama_data.get('etymology')), format_value(bedrock_data.get('etymology'))))
+    render_comparison_row("Etymology",
+                         format_value(ollama_data.get('etymology')),
+                         format_value(bedrock_data.get('etymology')))
 
     # English Cognates
-    rows.append(("English Cognates", format_value(ollama_data.get('english_cognates')), format_value(bedrock_data.get('english_cognates'))))
+    render_comparison_row("English Cognates",
+                         format_value(ollama_data.get('english_cognates')),
+                         format_value(bedrock_data.get('english_cognates')))
 
     # Gender (for nouns)
     if ollama_data.get('gender') or bedrock_data.get('gender'):
-        rows.append(("Gender", format_value(ollama_data.get('gender')), format_value(bedrock_data.get('gender'))))
+        render_comparison_row("Gender",
+                             format_value(ollama_data.get('gender')),
+                             format_value(bedrock_data.get('gender')))
 
     # Plural (for nouns)
     if ollama_data.get('plural') or bedrock_data.get('plural'):
-        rows.append(("Plural", format_value(ollama_data.get('plural')), format_value(bedrock_data.get('plural'))))
+        render_comparison_row("Plural",
+                             format_value(ollama_data.get('plural')),
+                             format_value(bedrock_data.get('plural')))
 
     # Conjugations (for verbs)
     if ollama_data.get('conjugations') or bedrock_data.get('conjugations'):
-        rows.append(("Conjugations",
-                    format_conjugations_html(ollama_data.get('conjugations')),
-                    format_conjugations_html(bedrock_data.get('conjugations'))))
+        render_comparison_row("Conjugations",
+                             format_conjugations(ollama_data.get('conjugations')),
+                             format_conjugations(bedrock_data.get('conjugations')))
 
     # Adjective Forms
     if ollama_data.get('adjective_forms') or bedrock_data.get('adjective_forms'):
-        rows.append(("Adjective Forms",
-                    format_adjective_forms_html(ollama_data.get('adjective_forms')),
-                    format_adjective_forms_html(bedrock_data.get('adjective_forms'))))
+        render_comparison_row("Adjective Forms",
+                             format_adjective_forms(ollama_data.get('adjective_forms')),
+                             format_adjective_forms(bedrock_data.get('adjective_forms')))
 
-    # Similar Words
-    rows.append(("Similar Words",
-                format_similar_words_html(ollama_data.get('similar_words')),
-                format_similar_words_html(bedrock_data.get('similar_words'))))
+    # Similar Words (English words with same etymology)
+    render_comparison_row("Related English Words",
+                         format_similar_words(ollama_data.get('similar_words')),
+                         format_similar_words(bedrock_data.get('similar_words')))
 
     # Examples
-    rows.append(("Examples",
-                format_examples_html(ollama_data.get('examples')),
-                format_examples_html(bedrock_data.get('examples'))))
-
-    # Render the HTML table
-    html_table = build_comparison_table(rows)
-    st.markdown(html_table, unsafe_allow_html=True)
+    render_comparison_row("Examples",
+                         format_examples(ollama_data.get('examples')),
+                         format_examples(bedrock_data.get('examples')))
 
 
 def render_single_structured(data: dict | None):
@@ -269,26 +231,22 @@ def render_single_structured(data: dict | None):
     # Conjugations (for verbs)
     if data.get('conjugations'):
         st.markdown("**Conjugations:**")
-        render_conjugation_table(data.get('conjugations'), "")
+        st.markdown(format_conjugations(data.get('conjugations')))
 
     # Adjective Forms
     if data.get('adjective_forms'):
-        forms = data.get('adjective_forms')
         st.markdown("**Adjective Forms:**")
-        st.markdown(f"- Masculine Singular: {forms.get('masculine_singular', '-')}")
-        st.markdown(f"- Feminine Singular: {forms.get('feminine_singular', '-')}")
-        st.markdown(f"- Masculine Plural: {forms.get('masculine_plural', '-')}")
-        st.markdown(f"- Feminine Plural: {forms.get('feminine_plural', '-')}")
+        st.markdown(format_adjective_forms(data.get('adjective_forms')))
 
-    # Similar Words
+    # Related English Words (words with same etymology)
     if data.get('similar_words'):
-        st.markdown("**Similar-Looking Words:**")
-        render_similar_words_table(data.get('similar_words'))
+        st.markdown("**Related English Words:**")
+        st.markdown(format_similar_words(data.get('similar_words')))
 
     # Example Sentences
     if data.get('examples'):
         st.markdown("**Example Sentences:**")
-        render_examples(data.get('examples'))
+        st.markdown(format_examples(data.get('examples')))
 
 
 def extract_word_info_from_json(data: dict | None, user_input: str) -> tuple[str, str, str]:
@@ -301,6 +259,29 @@ def extract_word_info_from_json(data: dict | None, user_input: str) -> tuple[str
     meaning = data.get('meaning', '')
 
     return word, word_type, meaning
+
+
+@st.dialog("Raw Model Output", width="large")
+def show_raw_output_dialog(ollama_content: str | None, bedrock_content: str | None):
+    """Dialog to show raw model output."""
+    if ollama_content and bedrock_content:
+        tab1, tab2 = st.tabs(["Ollama", "Bedrock"])
+        with tab1:
+            st.code(ollama_content, language="json")
+        with tab2:
+            st.code(bedrock_content, language="json")
+    elif ollama_content:
+        st.markdown("**Ollama Response:**")
+        st.code(ollama_content, language="json")
+    elif bedrock_content:
+        st.markdown("**Bedrock Response:**")
+        st.code(bedrock_content, language="json")
+
+
+def render_inspect_button(message_idx: int, ollama_content: str | None, bedrock_content: str | None):
+    """Render an inspect button that shows raw model output in a dialog."""
+    if st.button("🔍 Inspect", key=f"inspect_{message_idx}", help="View raw model output"):
+        show_raw_output_dialog(ollama_content, bedrock_content)
 
 
 def render_chat_interface():
@@ -323,7 +304,7 @@ def render_chat_interface():
     chat_container = st.container()
 
     with chat_container:
-        for message in st.session_state.messages:
+        for idx, message in enumerate(st.session_state.messages):
             if message["role"] == "user":
                 with st.chat_message("user"):
                     st.markdown(message["content"])
@@ -338,11 +319,13 @@ def render_chat_interface():
                     bedrock_data = parse_json_response(bedrock_content)
                     with st.container():
                         display_structured_comparison(ollama_data, bedrock_data)
+                        render_inspect_button(idx, ollama_content, bedrock_content)
                 elif is_structured and (ollama_content or bedrock_content):
                     content = ollama_content or bedrock_content
                     data = parse_json_response(content)
                     with st.chat_message("assistant"):
                         render_single_structured(data)
+                    render_inspect_button(idx, ollama_content, bedrock_content)
                 elif ollama_content and bedrock_content:
                     # Non-structured dual response
                     col1, col2 = st.columns(2)
@@ -354,12 +337,15 @@ def render_chat_interface():
                         st.markdown("#### Bedrock")
                         with st.chat_message("assistant"):
                             st.markdown(bedrock_content)
+                    render_inspect_button(idx, ollama_content, bedrock_content)
                 elif ollama_content:
                     with st.chat_message("assistant"):
                         st.markdown(ollama_content)
+                    render_inspect_button(idx, ollama_content, None)
                 elif bedrock_content:
                     with st.chat_message("assistant"):
                         st.markdown(bedrock_content)
+                    render_inspect_button(idx, None, bedrock_content)
                 else:
                     with st.chat_message("assistant"):
                         st.markdown(message["content"])

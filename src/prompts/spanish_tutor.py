@@ -30,7 +30,7 @@ When given a Spanish word, analyze it and respond with this exact JSON structure
     "feminine_plural": ""
   },
   "similar_words": [
-    {"word": "similar Spanish word", "meaning": "its meaning", "note": "why it might be confused"}
+    {"word": "English word with same origin", "meaning": "its meaning", "note": "how it relates etymologically"}
   ],
   "examples": [
     {"spanish": "Spanish sentence", "english": "English translation"},
@@ -44,7 +44,8 @@ Rules:
 - Include "conjugations" ONLY for verbs, otherwise set to null
 - Include "adjective_forms" ONLY for adjectives, otherwise set to null
 - Include "gender" and "plural" ONLY for nouns, otherwise set to null
-- Always include at least 2-3 similar_words to help avoid confusion
+- For "similar_words", list ENGLISH words that share the same etymological origin as the Spanish word (cognates from the same Latin/Greek/Arabic root). This helps English speakers remember the Spanish word by connecting it to familiar English vocabulary.
+- Always include at least 2-3 similar_words (English cognates)
 - Always include 2-3 example sentences
 - All explanations must be in English
 - Respond with ONLY the JSON object, no other text"""
@@ -89,9 +90,18 @@ def get_system_prompt(cefr_level: str = "all", structured: bool = False) -> str:
 
 def parse_json_response(response: str) -> dict | None:
     """Parse JSON from LLM response, handling common issues."""
+    def ensure_dict(data):
+        """Ensure the parsed data is a dict, not a list."""
+        if isinstance(data, dict):
+            return data
+        elif isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+            return data[0]
+        return None
+
     # Try direct parse first
     try:
-        return json.loads(response)
+        result = json.loads(response)
+        return ensure_dict(result)
     except json.JSONDecodeError:
         pass
 
@@ -100,7 +110,8 @@ def parse_json_response(response: str) -> dict | None:
     json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response, re.DOTALL)
     if json_match:
         try:
-            return json.loads(json_match.group(1))
+            result = json.loads(json_match.group(1))
+            return ensure_dict(result)
         except json.JSONDecodeError:
             pass
 
@@ -108,7 +119,8 @@ def parse_json_response(response: str) -> dict | None:
     json_match = re.search(r'\{.*\}', response, re.DOTALL)
     if json_match:
         try:
-            return json.loads(json_match.group(0))
+            result = json.loads(json_match.group(0))
+            return ensure_dict(result)
         except json.JSONDecodeError:
             pass
 
