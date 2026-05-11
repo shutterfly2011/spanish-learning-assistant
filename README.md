@@ -155,6 +155,24 @@ spanish-learning-assistant/
 └── README.md
 ```
 
+## MCP Server
+
+The `buenospanish_mcp/` subfolder contains a Model Context Protocol (MCP) server that provides Spanish word lookup functionality. This server can be used independently of the main Streamlit application.
+
+### Features
+- HTTP streaming support
+- Multiple tools for word lookup, meanings, etymology, and related words
+- Docker-ready deployment
+- Compatible with any MCP client
+
+### Quick Start
+```bash
+cd buenospanish_mcp
+docker-compose up --build
+```
+
+See `buenospanish_mcp/README.md` for detailed deployment and testing instructions.
+
 ## Supported Ollama Models
 
 Any model available on your Ollama server can be used. Recommended models:

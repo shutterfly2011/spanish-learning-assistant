@@ -1,0 +1,8 @@
+services:
+  mcp-server:
+    build: .
+    ports:
+      - "${MCP_SERVER_PORT:-8000}:8000"
+    environment:
+      - MCP_SERVER_PORT=${MCP_SERVER_PORT:-8000}
+    restart: unless-stopped
