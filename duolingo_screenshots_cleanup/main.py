@@ -2,13 +2,14 @@
 Duolingo Screenshot Processor
 
 Iterates over a folder of iPhone images, identifies Duolingo screenshots,
-extracts the Spanish subject word via an Ollama vision model, looks it up
-via the BuenoSpanish MCP server, and appends a concise flashcard to a
-Markdown file.
+extracts the Spanish subject word via a vision model, looks it up via the
+BuenoSpanish MCP server, and appends a concise flashcard to a Markdown file.
 
 Usage:
     python main.py --folder /path/to/photos
     python main.py                          # uses INPUT_FOLDER from .env
+
+Set PROVIDER in .env to switch between ollama / openai / gemini / bedrock.
 """
 
 import argparse
@@ -25,6 +26,7 @@ load_dotenv()
 from processor import (
     IMAGE_EXTENSIONS,
     append_to_markdown,
+    build_backend,
     build_flashcard,
     extract_content,
     is_screenshot,
@@ -73,6 +75,41 @@ def resolve_folder(args: argparse.Namespace) -> Path:
     return folder
 
 
+def build_config() -> dict:
+    provider = os.getenv("PROVIDER", "ollama").lower()
+    config: dict = {"provider": provider}
+
+    if provider == "ollama":
+        config.update({
+            "ollama_base_url": os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+            "vision_model":    os.getenv("OLLAMA_VISION_MODEL", "llava:latest"),
+            "text_model":      os.getenv("OLLAMA_MODEL", "llama3"),
+        })
+    elif provider == "openai":
+        config.update({
+            "openai_api_key": os.getenv("OPENAI_API_KEY", ""),
+            "vision_model":   os.getenv("OPENAI_VISION_MODEL", "gpt-4o"),
+            "text_model":     os.getenv("OPENAI_MODEL", "gpt-4o"),
+        })
+    elif provider == "gemini":
+        config.update({
+            "gemini_api_key": os.getenv("GEMINI_API_KEY", ""),
+            "vision_model":   os.getenv("GEMINI_VISION_MODEL", "gemini-1.5-pro"),
+            "text_model":     os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
+        })
+    elif provider == "bedrock":
+        config.update({
+            "aws_region":      os.getenv("AWS_REGION", "us-east-1"),
+            "vision_model":    os.getenv("BEDROCK_VISION_MODEL", "anthropic.claude-3-5-sonnet-20241022-v2:0"),
+            "text_model":      os.getenv("BEDROCK_MODEL", "anthropic.claude-3-haiku-20240307-v1:0"),
+            "bedrock_api_key": os.getenv("BEDROCK_API_KEY", ""),
+        })
+    else:
+        sys.exit(f"Error: unknown PROVIDER '{provider}'. Choose: ollama, openai, gemini, bedrock.")
+
+    return config
+
+
 def main() -> None:
     args = parse_args()
     folder = resolve_folder(args)
@@ -82,33 +119,33 @@ def main() -> None:
     log.info("Starting Duolingo screenshot processor")
     log.info(f"Input folder : {folder}")
 
-    # Config from environment
-    config = {
-        "ollama_base_url": os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-        "vision_model":    os.getenv("OLLAMA_VISION_MODEL", "llava:latest"),
-        "text_model":      os.getenv("OLLAMA_MODEL", "llama3"),
-        "mcp_server_url":  os.getenv("MCP_SERVER_URL", "http://localhost:8000"),
-    }
+    config = build_config()
+    backend = build_backend(config)
+
+    provider = config["provider"]
+    log.info(f"Provider     : {provider}")
+    log.info(f"Vision model : {config['vision_model']}")
+    log.info(f"Text model   : {config['text_model']}")
+
+    mcp_server_url = os.getenv("MCP_SERVER_URL", "http://localhost:8000")
     output_md = Path(
         os.getenv("OUTPUT_MARKDOWN_FILE", str(folder / "flashcards.md"))
     ).expanduser().resolve()
 
-    log.info(f"Vision model : {config['vision_model']} @ {config['ollama_base_url']}")
-    log.info(f"Text model   : {config['text_model']}")
-    log.info(f"MCP server   : {config['mcp_server_url']}")
-    log.info(f"Output file  : {output_md}")
+    processed_dir = Path(
+        os.getenv("OUTPUT_FOLDER", str(folder / "processed"))
+    ).expanduser().resolve()
+    processed_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load rules once
+    log.info(f"MCP server   : {mcp_server_url}")
+    log.info(f"Output file  : {output_md}")
+    log.info(f"Processed dir: {processed_dir}")
+
     if not RULES_FILE.exists():
         log.error(f"rules.md not found at {RULES_FILE}. Cannot continue.")
         sys.exit(1)
     rules_text = RULES_FILE.read_text(encoding="utf-8")
 
-    # Prepare processed/ subfolder
-    processed_dir = folder / "processed"
-    processed_dir.mkdir(exist_ok=True)
-
-    # Collect images (only from the root of the folder, not processed/)
     images = sorted(
         f for f in folder.iterdir()
         if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS
@@ -129,11 +166,7 @@ def main() -> None:
 
             # ── Step 2: Extract content via vision model ─────────────────
             log.info("  [vision] extracting content...")
-            content = extract_content(
-                img_path,
-                config["ollama_base_url"],
-                config["vision_model"],
-            )
+            content = extract_content(img_path, backend)
             if not content.strip():
                 log.warning("  [skip] vision model returned empty content")
                 skipped_count += 1
@@ -142,12 +175,7 @@ def main() -> None:
 
             # ── Step 3: Apply rules ───────────────────────────────────────
             log.info("  [rules] identifying word and type...")
-            result = process_with_rules(
-                content,
-                rules_text,
-                config["ollama_base_url"],
-                config["text_model"],
-            )
+            result = process_with_rules(content, rules_text, backend)
             if not result:
                 log.warning("  [skip] could not parse rules response")
                 skipped_count += 1
@@ -171,7 +199,7 @@ def main() -> None:
             if result.get("needs_lookup", True):
                 log.info(f"  [mcp] looking up '{word}'...")
                 try:
-                    mcp_data = lookup_word(word, config["mcp_server_url"])
+                    mcp_data = lookup_word(word, mcp_server_url)
                     log.info(
                         f"  [mcp] meanings={len(mcp_data.get('meanings', []))}, "
                         f"etymology={'yes' if mcp_data.get('etymology') else 'no'}, "
@@ -185,12 +213,12 @@ def main() -> None:
             append_to_markdown(flashcard, output_md)
             log.info(f"  [output] flashcard appended to {output_md.name}")
 
-            # ── Step 5: Move to processed/ ────────────────────────────────
+            # ── Step 5: Move to output folder ─────────────────────────────
             dest = processed_dir / img_path.name
             if dest.exists():
                 dest = processed_dir / f"{img_path.stem}_dup{img_path.suffix}"
             shutil.move(str(img_path), str(dest))
-            log.info(f"  [done] moved to processed/{dest.name}")
+            log.info(f"  [done] moved to {dest}")
             ok_count += 1
 
         except Exception as exc:

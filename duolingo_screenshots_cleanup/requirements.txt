@@ -2,3 +2,8 @@ Pillow>=10.0.0
 pillow-heif>=0.13.0
 requests>=2.31.0
 python-dotenv>=1.0.0
+
+# Cloud provider SDKs — install only what you need based on PROVIDER in .env
+# openai>=1.30.0          # PROVIDER=openai
+# google-generativeai>=0.7.0  # PROVIDER=gemini
+# boto3>=1.34.0           # PROVIDER=bedrock

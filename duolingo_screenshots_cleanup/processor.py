@@ -1,3 +1,4 @@
+import abc
 import base64
 import json
 import re
@@ -6,96 +7,30 @@ from typing import Optional
 
 import requests
 from PIL import Image
-from PIL.ExifTags import TAGS
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".webp"}
 
+_VISION_PROMPT = (
+    "Analyse this Duolingo screenshot. For each visible text element, describe:\n"
+    "1. The exact text\n"
+    "2. Its UI role / position (e.g. isolated tap-target button, word-bank chip, "
+    "sentence in a paragraph, standalone translation hint at the bottom, "
+    "fill-in-the-blank prompt, header/title, progress indicator)\n\n"
+    "Format each element as: [ROLE] text\n\n"
+    "Example output:\n"
+    "[sentence] Sin embargo, esto nos permitió tener una vista del ____.\n"
+    "[standalone translation hint] however\n"
+    "[word-bank option] sofá\n"
+    "[word-bank option] cielo\n"
+    "[button] CONTINUE\n\n"
+    "Be precise about which words are isolated UI elements vs embedded in sentences."
+)
 
-# ---------------------------------------------------------------------------
-# Step 1 — Screenshot detection
-# ---------------------------------------------------------------------------
-
-def is_screenshot(image_path: Path) -> bool:
-    """
-    Return True if the image is a smartphone screenshot rather than a camera photo.
-
-    Heuristics (in order):
-    - .png  → almost always a screenshot on iPhone
-    - .heic → always a camera photo on iPhone
-    - JPEG  → check EXIF for camera-specific tags (Make, Model, FocalLength, LensModel);
-              their absence means no camera was involved → screenshot
-    """
-    suffix = image_path.suffix.lower()
-    if suffix == ".png":
-        return True
-    if suffix == ".heic":
-        return False
-    try:
-        img = Image.open(image_path)
-        exif = img.getexif()
-        named = {TAGS.get(k, k): v for k, v in exif.items()}
-        camera_fields = {"Make", "Model", "FocalLength", "LensModel"}
-        return not bool(camera_fields.intersection(named.keys()))
-    except Exception:
-        return True  # can't read EXIF → assume screenshot
-
-
-# ---------------------------------------------------------------------------
-# Step 2 — Vision extraction
-# ---------------------------------------------------------------------------
-
-def extract_content(image_path: Path, ollama_base_url: str, vision_model: str) -> str:
-    """Call an Ollama vision model to transcribe all text and describe the UI."""
-    with open(image_path, "rb") as f:
-        image_b64 = base64.b64encode(f.read()).decode()
-
-    payload = {
-        "model": vision_model,
-        "messages": [{
-            "role": "user",
-            "content": (
-                "Analyse this Duolingo screenshot. For each visible text element, describe:\n"
-                "1. The exact text\n"
-                "2. Its UI role / position (e.g. isolated tap-target button, word-bank chip, "
-                "sentence in a paragraph, standalone translation hint at the bottom, "
-                "fill-in-the-blank prompt, header/title, progress indicator)\n\n"
-                "Format each element as: [ROLE] text\n\n"
-                "Example output:\n"
-                "[sentence] Sin embargo, esto nos permitió tener una vista del ____.\n"
-                "[standalone translation hint] however\n"
-                "[word-bank option] sofá\n"
-                "[word-bank option] cielo\n"
-                "[button] CONTINUE\n\n"
-                "Be precise about which words are isolated UI elements vs embedded in sentences."
-            ),
-            "images": [image_b64],
-        }],
-        "stream": False,
-    }
-    url = f"{ollama_base_url.rstrip('/')}/api/chat"
-    r = requests.post(url, json=payload, timeout=120)
-    r.raise_for_status()
-    return r.json().get("message", {}).get("content", "")
-
-
-# ---------------------------------------------------------------------------
-# Step 3 — Rules-based processing
-# ---------------------------------------------------------------------------
-
-def process_with_rules(
-    content: str,
-    rules_text: str,
-    ollama_base_url: str,
-    text_model: str,
-) -> Optional[dict]:
-    """
-    Send extracted content + rules.md to Ollama text model.
-    Returns a dict: {is_spanish_lesson, word, word_type, needs_lookup}.
-    """
-    prompt = f"""You are analysing content extracted from a smartphone screenshot.
+_RULES_PROMPT = """\
+You are analysing content extracted from a smartphone screenshot.
 
 --- RULES ---
-{rules_text}
+{rules}
 --- END RULES ---
 
 --- EXTRACTED CONTENT ---
@@ -110,17 +45,13 @@ Apply the rules and respond with ONLY a valid JSON object (no other text):
   "needs_lookup": <true|false>
 }}"""
 
-    payload = {
-        "model": text_model,
-        "messages": [{"role": "user", "content": prompt}],
-        "stream": False,
-        "think": False,
-    }
-    url = f"{ollama_base_url.rstrip('/')}/api/chat"
-    r = requests.post(url, json=payload, timeout=60)
-    r.raise_for_status()
-    text = r.json().get("message", {}).get("content", "")
 
+def _image_mime(image_path: Path) -> str:
+    suffix = image_path.suffix.lower().lstrip(".")
+    return "image/jpeg" if suffix in ("jpg", "jpeg") else f"image/{suffix}"
+
+
+def _parse_json(text: str) -> Optional[dict]:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
@@ -134,15 +65,207 @@ Apply the rules and respond with ONLY a valid JSON object (no other text):
 
 
 # ---------------------------------------------------------------------------
+# LLM backend abstraction
+# ---------------------------------------------------------------------------
+
+class LLMBackend(abc.ABC):
+    @abc.abstractmethod
+    def vision(self, image_path: Path, prompt: str) -> str: ...
+
+    @abc.abstractmethod
+    def text(self, prompt: str) -> str: ...
+
+
+class OllamaBackend(LLMBackend):
+    def __init__(self, base_url: str, vision_model: str, text_model: str, timeout: int = 300):
+        self._url = base_url.rstrip("/") + "/api/chat"
+        self._vision_model = vision_model
+        self._text_model = text_model
+        self._timeout = timeout
+
+    def vision(self, image_path: Path, prompt: str) -> str:
+        with open(image_path, "rb") as f:
+            image_b64 = base64.b64encode(f.read()).decode()
+        payload = {
+            "model": self._vision_model,
+            "messages": [{"role": "user", "content": prompt, "images": [image_b64]}],
+            "stream": False,
+        }
+        r = requests.post(self._url, json=payload, timeout=self._timeout)
+        r.raise_for_status()
+        return r.json().get("message", {}).get("content", "")
+
+    def text(self, prompt: str) -> str:
+        payload = {
+            "model": self._text_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+            "think": False,
+        }
+        r = requests.post(self._url, json=payload, timeout=self._timeout)
+        r.raise_for_status()
+        return r.json().get("message", {}).get("content", "")
+
+
+class OpenAIBackend(LLMBackend):
+    def __init__(self, api_key: str, vision_model: str, text_model: str):
+        from openai import OpenAI
+        self._client = OpenAI(api_key=api_key)
+        self._vision_model = vision_model
+        self._text_model = text_model
+
+    def vision(self, image_path: Path, prompt: str) -> str:
+        with open(image_path, "rb") as f:
+            image_b64 = base64.b64encode(f.read()).decode()
+        mime = _image_mime(image_path)
+        response = self._client.chat.completions.create(
+            model=self._vision_model,
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
+            ]}],
+        )
+        return response.choices[0].message.content or ""
+
+    def text(self, prompt: str) -> str:
+        response = self._client.chat.completions.create(
+            model=self._text_model,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.choices[0].message.content or ""
+
+
+class GeminiBackend(LLMBackend):
+    def __init__(self, api_key: str, vision_model: str, text_model: str):
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        self._genai = genai
+        self._vision_model = vision_model
+        self._text_model = text_model
+
+    def vision(self, image_path: Path, prompt: str) -> str:
+        with open(image_path, "rb") as f:
+            image_bytes = f.read()
+        mime = _image_mime(image_path)
+        model = self._genai.GenerativeModel(self._vision_model)
+        response = model.generate_content([prompt, {"mime_type": mime, "data": image_bytes}])
+        return response.text or ""
+
+    def text(self, prompt: str) -> str:
+        model = self._genai.GenerativeModel(self._text_model)
+        return model.generate_content(prompt).text or ""
+
+
+class BedrockBackend(LLMBackend):
+    def __init__(self, region: str, vision_model: str, text_model: str, api_key: str = ""):
+        import boto3, os
+        if api_key:
+            os.environ["AWS_BEARER_TOKEN_BEDROCK"] = api_key
+        self._client = boto3.client("bedrock-runtime", region_name=region)
+        self._vision_model = vision_model
+        self._text_model = text_model
+
+    def _invoke(self, model_id: str, messages: list) -> str:
+        body = json.dumps({
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": 4096,
+            "messages": messages,
+        })
+        response = self._client.invoke_model(modelId=model_id, body=body)
+        return json.loads(response["body"].read())["content"][0]["text"]
+
+    _MAX_IMAGE_BYTES = 5 * 1024 * 1024  # Bedrock hard limit on raw image bytes
+
+    def vision(self, image_path: Path, prompt: str) -> str:
+        image_bytes = self._resize_if_needed(image_path)
+        image_b64 = base64.b64encode(image_bytes).decode()
+        mime = "image/jpeg" if image_path.suffix.lower() in (".jpg", ".jpeg") else "image/png"
+        messages = [{"role": "user", "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": mime, "data": image_b64}},
+            {"type": "text", "text": prompt},
+        ]}]
+        return self._invoke(self._vision_model, messages)
+
+    def _resize_if_needed(self, image_path: Path) -> bytes:
+        with open(image_path, "rb") as f:
+            raw = f.read()
+        if len(raw) <= self._MAX_IMAGE_BYTES:
+            return raw
+        import io
+        img = Image.open(io.BytesIO(raw)).convert("RGB")
+        quality = 85
+        while True:
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=quality)
+            data = buf.getvalue()
+            if len(data) <= self._MAX_IMAGE_BYTES or quality <= 30:
+                return data
+            quality -= 15
+
+    def text(self, prompt: str) -> str:
+        return self._invoke(self._text_model, [{"role": "user", "content": prompt}])
+
+
+def build_backend(config: dict) -> LLMBackend:
+    provider = config.get("provider", "ollama").lower()
+
+    if provider == "openai":
+        return OpenAIBackend(
+            api_key=config["openai_api_key"],
+            vision_model=config.get("vision_model", "gpt-4o"),
+            text_model=config.get("text_model", "gpt-4o"),
+        )
+    if provider == "gemini":
+        return GeminiBackend(
+            api_key=config["gemini_api_key"],
+            vision_model=config.get("vision_model", "gemini-1.5-pro"),
+            text_model=config.get("text_model", "gemini-1.5-flash"),
+        )
+    if provider == "bedrock":
+        return BedrockBackend(
+            region=config.get("aws_region", "us-east-1"),
+            vision_model=config.get("vision_model", "us.anthropic.claude-sonnet-4-6"),
+            text_model=config.get("text_model", "us.anthropic.claude-haiku-4-5-20251001-v1:0"),
+            api_key=config.get("bedrock_api_key", ""),
+        )
+    # Default: ollama
+    return OllamaBackend(
+        base_url=config.get("ollama_base_url", "http://localhost:11434"),
+        vision_model=config.get("vision_model", "llava:latest"),
+        text_model=config.get("text_model", "llama3"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Step 1 — Screenshot detection
+# ---------------------------------------------------------------------------
+
+def is_screenshot(image_path: Path) -> bool:
+    return image_path.suffix.lower() == ".png"
+
+
+# ---------------------------------------------------------------------------
+# Step 2 — Vision extraction
+# ---------------------------------------------------------------------------
+
+def extract_content(image_path: Path, backend: LLMBackend) -> str:
+    return backend.vision(image_path, _VISION_PROMPT)
+
+
+# ---------------------------------------------------------------------------
+# Step 3 — Rules-based processing
+# ---------------------------------------------------------------------------
+
+def process_with_rules(content: str, rules_text: str, backend: LLMBackend) -> Optional[dict]:
+    prompt = _RULES_PROMPT.format(rules=rules_text, content=content)
+    return _parse_json(backend.text(prompt))
+
+
+# ---------------------------------------------------------------------------
 # Step 3b — MCP word lookup
 # ---------------------------------------------------------------------------
 
 def lookup_word(word: str, mcp_server_url: str) -> dict:
-    """
-    Fetch all data for a Spanish word via the MCP server's REST endpoint:
-      GET /lookup/{word}
-    Returns a dict with keys: meanings, etymology, english_cognates.
-    """
     url = f"{mcp_server_url.rstrip('/')}/lookup/{word}"
     r = requests.get(url, timeout=15)
     r.raise_for_status()
@@ -161,7 +284,6 @@ def lookup_word(word: str, mcp_server_url: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def _trim(text: str, max_chars: int = 160) -> str:
-    """Return the first sentence of text, capped at max_chars."""
     if not text:
         return ""
     end = text.find(". ")
@@ -170,44 +292,20 @@ def _trim(text: str, max_chars: int = 160) -> str:
 
 
 def _definition_line(word_type: str, meanings: list) -> str:
-    """
-    Build a single concise definition line tailored to word type.
-
-    Nouns   : strip leading articles / sense numbers
-    Verbs   : prepend 'to ' if missing
-    Adj/Adv : use as-is
-    Phrase  : use as-is
-    """
     if not meanings:
         return ""
-
     raw = meanings[0].get("definition", "")
-    # Remove leading sense labels like "1. " or "A. "
     raw = re.sub(r"^[\dA-Za-z]+\.\s*", "", raw)
-    # Take only the first sense (before ';' or second comma-clause)
     raw = raw.split(";")[0].split("//")[0].strip()
-
     if word_type == "verb" and raw and not raw.lower().startswith("to "):
         raw = f"to {raw}"
-
     return raw
 
 
 def build_flashcard(word: str, word_type: str, mcp_data: dict) -> str:
-    """
-    Assemble a flashcard in the format:
-
-        ---
-        {word}
-        ?
-        {definition} ({word_type})
-        Etym: {first sentence of etymology}
-        Cognates: {english cognates}
-    """
     word_type = (word_type or "").lower()
     lines: list[str] = []
 
-    # — Definition line —
     meanings = mcp_data.get("meanings", [])
     definition = _definition_line(word_type, meanings)
     type_label = word_type if word_type not in ("", "null") else ""
@@ -218,12 +316,10 @@ def build_flashcard(word: str, word_type: str, mcp_data: dict) -> str:
     elif type_label:
         lines.append(f"({type_label})")
 
-    # — Etymology line —
     etymology = mcp_data.get("etymology", "")
     if etymology and etymology != "No etymology information available":
         lines.append(f"Etym: {_trim(etymology)}")
 
-    # — English cognates line —
     cognates = mcp_data.get("english_cognates", [])
     if cognates:
         lines.append(f"Cognates: {', '.join(cognates[:5])}")
@@ -237,7 +333,6 @@ def build_flashcard(word: str, word_type: str, mcp_data: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def append_to_markdown(flashcard: str, output_path: Path) -> None:
-    """Append a flashcard block to the output markdown file."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "a", encoding="utf-8") as f:
         f.write(flashcard + "\n")
