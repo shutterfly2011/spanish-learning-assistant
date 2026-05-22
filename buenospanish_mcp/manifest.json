@@ -1,0 +1,75 @@
+{
+  "name": "buenospanish",
+  "version": "1.0.0",
+  "description": "Spanish dictionary MCP server backed by buenospanish.com — provides meanings, etymology, and related-word lookups.",
+  "transport": {
+    "type": "streamable-http",
+    "url": "http://localhost:8000/mcp"
+  },
+  "tools": [
+    {
+      "name": "lookup_word",
+      "description": "Look up a Spanish word and return detailed information including meanings, etymology, and related words.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "word": {
+            "type": "string",
+            "description": "The Spanish word to look up"
+          }
+        },
+        "required": ["word"]
+      }
+    },
+    {
+      "name": "get_word_meanings",
+      "description": "Get the meanings of a Spanish word as structured data.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "word": {
+            "type": "string",
+            "description": "The Spanish word to look up"
+          }
+        },
+        "required": ["word"]
+      }
+    },
+    {
+      "name": "get_etymology",
+      "description": "Get the etymology of a Spanish word.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "word": {
+            "type": "string",
+            "description": "The Spanish word to look up"
+          }
+        },
+        "required": ["word"]
+      }
+    },
+    {
+      "name": "get_related_words",
+      "description": "Get related Spanish and English words, and English cognates, for a given Spanish word.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "word": {
+            "type": "string",
+            "description": "The Spanish word to look up"
+          }
+        },
+        "required": ["word"]
+      }
+    }
+  ],
+  "claudeDesktopConfig": {
+    "mcpServers": {
+      "buenospanish": {
+        "type": "http",
+        "url": "http://localhost:8000/mcp"
+      }
+    }
+  }
+}

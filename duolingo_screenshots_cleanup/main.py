@@ -138,7 +138,7 @@ def main() -> None:
                 log.warning("  [skip] vision model returned empty content")
                 skipped_count += 1
                 continue
-            log.debug(f"  content preview: {content[:200]!r}")
+            print(f"\n  ── OCR result ──\n{content}\n  ────────────────")
 
             # ── Step 3: Apply rules ───────────────────────────────────────
             log.info("  [rules] identifying word and type...")

@@ -54,8 +54,19 @@ def extract_content(image_path: Path, ollama_base_url: str, vision_model: str) -
         "messages": [{
             "role": "user",
             "content": (
-                "Transcribe every piece of visible text in this image exactly as written. "
-                "Then briefly note the app name and type of screen (e.g. 'Duolingo — word introduction')."
+                "Analyse this Duolingo screenshot. For each visible text element, describe:\n"
+                "1. The exact text\n"
+                "2. Its UI role / position (e.g. isolated tap-target button, word-bank chip, "
+                "sentence in a paragraph, standalone translation hint at the bottom, "
+                "fill-in-the-blank prompt, header/title, progress indicator)\n\n"
+                "Format each element as: [ROLE] text\n\n"
+                "Example output:\n"
+                "[sentence] Sin embargo, esto nos permitió tener una vista del ____.\n"
+                "[standalone translation hint] however\n"
+                "[word-bank option] sofá\n"
+                "[word-bank option] cielo\n"
+                "[button] CONTINUE\n\n"
+                "Be precise about which words are isolated UI elements vs embedded in sentences."
             ),
             "images": [image_b64],
         }],
@@ -103,6 +114,7 @@ Apply the rules and respond with ONLY a valid JSON object (no other text):
         "model": text_model,
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
+        "think": False,
     }
     url = f"{ollama_base_url.rstrip('/')}/api/chat"
     r = requests.post(url, json=payload, timeout=60)
