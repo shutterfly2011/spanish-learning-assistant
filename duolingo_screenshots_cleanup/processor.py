@@ -302,7 +302,7 @@ def _definition_line(word_type: str, meanings: list) -> str:
     return raw
 
 
-def build_flashcard(word: str, word_type: str, mcp_data: dict) -> str:
+def build_flashcard(word: str, word_type: str, mcp_data: dict, source_filename: Optional[str] = None) -> str:
     word_type = (word_type or "").lower()
     lines: list[str] = []
 
@@ -323,6 +323,9 @@ def build_flashcard(word: str, word_type: str, mcp_data: dict) -> str:
     cognates = mcp_data.get("english_cognates", [])
     if cognates:
         lines.append(f"Cognates: {', '.join(cognates[:5])}")
+
+    if source_filename:
+        lines.append(f"Source: {source_filename}")
 
     body = "\n".join(lines) if lines else "(no data retrieved)"
     return f"---\n{word}\n?\n{body}\n"

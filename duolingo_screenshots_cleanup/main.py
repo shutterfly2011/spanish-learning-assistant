@@ -7,6 +7,7 @@ BuenoSpanish MCP server, and appends a concise flashcard to a Markdown file.
 
 Usage:
     python main.py --folder /path/to/photos
+    python main.py --file /path/to/image.png
     python main.py                          # uses INPUT_FOLDER from .env
 
 Set PROVIDER in .env to switch between ollama / openai / gemini / bedrock.
@@ -59,20 +60,37 @@ def parse_args() -> argparse.Namespace:
         "--folder",
         help="Path to the folder containing iPhone images. Overrides INPUT_FOLDER in .env.",
     )
+    parser.add_argument(
+        "--file",
+        help="Path to a single image file to process. Overrides --folder and INPUT_FOLDER.",
+    )
     return parser.parse_args()
 
 
-def resolve_folder(args: argparse.Namespace) -> Path:
+def resolve_input_path(args: argparse.Namespace) -> tuple[Path, str]:
+    file_str = args.file or os.getenv("INPUT_FILE", "")
+    if file_str:
+        file_path = Path(file_str).expanduser().resolve()
+        if not file_path.exists():
+            sys.exit(f"Error: file not found: {file_path}")
+        if not file_path.is_file():
+            sys.exit(f"Error: not a file: {file_path}")
+        if file_path.suffix.lower() not in IMAGE_EXTENSIONS:
+            sys.exit(f"Error: unsupported image extension: {file_path}")
+        return file_path, "file"
+
     folder_str = args.folder or os.getenv("INPUT_FOLDER", "")
     if not folder_str:
         sys.exit(
-            "Error: no folder specified. "
-            "Use --folder /path or set INPUT_FOLDER in .env."
+            "Error: no input specified. "
+            "Use --file /path/to/image.png, --folder /path/to/photos, or set INPUT_FOLDER in .env."
         )
     folder = Path(folder_str).expanduser().resolve()
-    if not folder.is_dir():
+    if not folder.exists():
         sys.exit(f"Error: folder not found: {folder}")
-    return folder
+    if not folder.is_dir():
+        sys.exit(f"Error: not a folder: {folder}")
+    return folder, "folder"
 
 
 def build_config() -> dict:
@@ -112,12 +130,12 @@ def build_config() -> dict:
 
 def main() -> None:
     args = parse_args()
-    folder = resolve_folder(args)
+    input_path, input_type = resolve_input_path(args)
 
     log = setup_logging(Path(__file__).parent / "processor.log")
     log.info("=" * 60)
     log.info("Starting Duolingo screenshot processor")
-    log.info(f"Input folder : {folder}")
+    log.info(f"Input {input_type}: {input_path}")
 
     config = build_config()
     backend = build_backend(config)
@@ -128,12 +146,19 @@ def main() -> None:
     log.info(f"Text model   : {config['text_model']}")
 
     mcp_server_url = os.getenv("MCP_SERVER_URL", "http://localhost:8000")
+    if input_type == "file":
+        default_output_md = input_path.parent / "flashcards.md"
+        default_processed_dir = input_path.parent / "processed"
+    else:
+        default_output_md = input_path / "flashcards.md"
+        default_processed_dir = input_path / "processed"
+
     output_md = Path(
-        os.getenv("OUTPUT_MARKDOWN_FILE", str(folder / "flashcards.md"))
+        os.getenv("OUTPUT_MARKDOWN_FILE", str(default_output_md))
     ).expanduser().resolve()
 
     processed_dir = Path(
-        os.getenv("OUTPUT_FOLDER", str(folder / "processed"))
+        os.getenv("OUTPUT_FOLDER", str(default_processed_dir))
     ).expanduser().resolve()
     processed_dir.mkdir(parents=True, exist_ok=True)
 
@@ -146,10 +171,13 @@ def main() -> None:
         sys.exit(1)
     rules_text = RULES_FILE.read_text(encoding="utf-8")
 
-    images = sorted(
-        f for f in folder.iterdir()
-        if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS
-    )
+    if input_type == "file":
+        images = [input_path]
+    else:
+        images = sorted(
+            f for f in input_path.iterdir()
+            if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS
+        )
     log.info(f"Found {len(images)} image(s) to process")
 
     ok_count = skipped_count = error_count = 0
@@ -209,7 +237,7 @@ def main() -> None:
                     log.warning(f"  [mcp] lookup failed ({exc}); proceeding without it")
 
             # ── Step 4: Build and append flashcard ────────────────────────
-            flashcard = build_flashcard(word, word_type, mcp_data)
+            flashcard = build_flashcard(word, word_type, mcp_data, img_path.name)
             append_to_markdown(flashcard, output_md)
             log.info(f"  [output] flashcard appended to {output_md.name}")
 
