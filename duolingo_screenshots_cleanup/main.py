@@ -14,6 +14,7 @@ Set PROVIDER in .env to switch between ollama / openai / gemini / bedrock.
 """
 
 import argparse
+import csv
 import logging
 import os
 import shutil
@@ -50,6 +51,16 @@ def setup_logging(log_file: Path) -> logging.Logger:
         ],
     )
     return logging.getLogger("processor")
+
+
+def append_csv_row(csv_path: Path, file_name: str, vision_response: str, flashcard_output: str) -> None:
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not csv_path.exists() or csv_path.stat().st_size == 0
+    with open(csv_path, "a", encoding="utf-8", newline="") as csv_file:
+        writer = csv.writer(csv_file)
+        if write_header:
+            writer.writerow(["file name", "OCR/vision response", "Flashcard output"])
+        writer.writerow([file_name, vision_response, flashcard_output])
 
 
 def parse_args() -> argparse.Namespace:
@@ -162,6 +173,9 @@ def main() -> None:
     ).expanduser().resolve()
     processed_dir.mkdir(parents=True, exist_ok=True)
 
+    csv_path = (input_path.parent if input_type == "file" else input_path) / "processing_results.csv"
+    log.info(f"CSV output   : {csv_path}")
+
     log.info(f"MCP server   : {mcp_server_url}")
     log.info(f"Output file  : {output_md}")
     log.info(f"Processed dir: {processed_dir}")
@@ -184,6 +198,8 @@ def main() -> None:
 
     for img_path in images:
         log.info(f"--- {img_path.name}")
+        vision_response = ""
+        flashcard_output = ""
 
         try:
             # ── Step 1: Is it a screenshot? ──────────────────────────────
@@ -195,6 +211,7 @@ def main() -> None:
             # ── Step 2: Extract content via vision model ─────────────────
             log.info("  [vision] extracting content...")
             content = extract_content(img_path, backend)
+            vision_response = content
             if not content.strip():
                 log.warning("  [skip] vision model returned empty content")
                 skipped_count += 1
@@ -238,6 +255,7 @@ def main() -> None:
 
             # ── Step 4: Build and append flashcard ────────────────────────
             flashcard = build_flashcard(word, word_type, mcp_data, img_path.name)
+            flashcard_output = flashcard
             append_to_markdown(flashcard, output_md)
             log.info(f"  [output] flashcard appended to {output_md.name}")
 
@@ -252,6 +270,8 @@ def main() -> None:
         except Exception as exc:
             log.error(f"  [error] {exc}", exc_info=True)
             error_count += 1
+        finally:
+            append_csv_row(csv_path, img_path.name, vision_response, flashcard_output)
 
     log.info("=" * 60)
     log.info(
