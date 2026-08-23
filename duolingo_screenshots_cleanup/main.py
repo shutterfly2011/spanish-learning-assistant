@@ -15,6 +15,7 @@ Set PROVIDER in .env to switch between ollama / openai / gemini / bedrock.
 
 import argparse
 import csv
+import json
 import logging
 import os
 import shutil
@@ -61,6 +62,46 @@ def append_csv_row(csv_path: Path, file_name: str, vision_response: str, flashca
         if write_header:
             writer.writerow(["file name", "OCR/vision response", "Flashcard output"])
         writer.writerow([file_name, vision_response, flashcard_output])
+
+
+def write_processing_results(
+    image_path: Path,
+    ocr_result: str,
+    identified_word: str = "",
+    word_type: str = "",
+    identification_result: dict | None = None,
+    lookup_result: dict | None = None,
+    final_outcome: str = "",
+) -> None:
+    results = {
+        "ocr_result": ocr_result,
+        "identified_word": identified_word,
+        "word_type": word_type,
+        "identification_result": identification_result,
+        "lookup_result": lookup_result,
+        "final_outcome": final_outcome,
+    }
+    json_path = image_path.with_suffix(".json")
+    json_path.write_text(
+        json.dumps(results, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def get_ocr_content(image_path: Path, backend, log: logging.Logger) -> str:
+    json_path = image_path.with_suffix(".json")
+    if json_path.exists():
+        results = json.loads(json_path.read_text(encoding="utf-8"))
+        content = results.get("ocr_result")
+        if isinstance(content, str):
+            log.info(f"  [vision] using existing JSON sidecar {json_path.name}")
+            return content
+
+    log.info("  [vision] extracting content...")
+    content = extract_content(image_path, backend)
+    write_processing_results(image_path, content)
+    log.info(f"  [vision] saved processing results to {json_path.name}")
+    return content
 
 
 def parse_args() -> argparse.Namespace:
@@ -156,7 +197,6 @@ def main() -> None:
     log.info(f"Vision model : {config['vision_model']}")
     log.info(f"Text model   : {config['text_model']}")
 
-    mcp_server_url = os.getenv("MCP_SERVER_URL", "http://localhost:8000")
     if input_type == "file":
         default_output_md = input_path.parent / "flashcards.md"
         default_processed_dir = input_path.parent / "processed"
@@ -176,7 +216,6 @@ def main() -> None:
     csv_path = (input_path.parent if input_type == "file" else input_path) / "processing_results.csv"
     log.info(f"CSV output   : {csv_path}")
 
-    log.info(f"MCP server   : {mcp_server_url}")
     log.info(f"Output file  : {output_md}")
     log.info(f"Processed dir: {processed_dir}")
 
@@ -200,20 +239,27 @@ def main() -> None:
         log.info(f"--- {img_path.name}")
         vision_response = ""
         flashcard_output = ""
+        content = ""
+        result = None
+        word = ""
+        word_type = ""
+        lookup_data: dict = {}
+        final_outcome = "error"
 
         try:
             # ── Step 1: Is it a screenshot? ──────────────────────────────
             if not is_screenshot(img_path):
                 log.info("  [skip] not a screenshot (camera EXIF present)")
+                write_processing_results(img_path, "", final_outcome="not_screenshot")
                 skipped_count += 1
                 continue
 
             # ── Step 2: Extract content via vision model ─────────────────
-            log.info("  [vision] extracting content...")
-            content = extract_content(img_path, backend)
+            content = get_ocr_content(img_path, backend, log)
             vision_response = content
             if not content.strip():
                 log.warning("  [skip] vision model returned empty content")
+                write_processing_results(img_path, content, final_outcome="empty_ocr")
                 skipped_count += 1
                 continue
             print(f"\n  ── OCR result ──\n{content}\n  ────────────────")
@@ -221,12 +267,24 @@ def main() -> None:
             # ── Step 3: Apply rules ───────────────────────────────────────
             log.info("  [rules] identifying word and type...")
             result = process_with_rules(content, rules_text, backend)
+            write_processing_results(
+                img_path,
+                content,
+                identification_result=result,
+                final_outcome="identification_failed" if not result else "",
+            )
             if not result:
                 log.warning("  [skip] could not parse rules response")
                 skipped_count += 1
                 continue
             if not result.get("is_spanish_lesson"):
                 log.info("  [skip] not identified as a Spanish lesson")
+                write_processing_results(
+                    img_path,
+                    content,
+                    identification_result=result,
+                    final_outcome="not_spanish_lesson",
+                )
                 skipped_count += 1
                 continue
 
@@ -234,30 +292,66 @@ def main() -> None:
             word_type = (result.get("word_type") or "").strip()
             if not word or word.lower() == "null":
                 log.info("  [skip] no subject word identified")
+                write_processing_results(
+                    img_path,
+                    content,
+                    word_type=word_type,
+                    identification_result=result,
+                    final_outcome="no_word",
+                )
                 skipped_count += 1
                 continue
 
             log.info(f"  word='{word}'  type='{word_type}'")
 
-            # ── Step 3b: MCP lookup ───────────────────────────────────────
-            mcp_data: dict = {}
+            # ── Step 3b: BuenoSpanish lookup ─────────────────────────────
+            write_processing_results(
+                img_path,
+                content,
+                identified_word=word,
+                word_type=word_type,
+                identification_result=result,
+                lookup_result=lookup_data,
+            )
             if result.get("needs_lookup", True):
-                log.info(f"  [mcp] looking up '{word}'...")
+                log.info(f"  [lookup] looking up '{word}'...")
                 try:
-                    mcp_data = lookup_word(word, mcp_server_url)
-                    log.info(
-                        f"  [mcp] meanings={len(mcp_data.get('meanings', []))}, "
-                        f"etymology={'yes' if mcp_data.get('etymology') else 'no'}, "
-                        f"cognates={mcp_data.get('english_cognates', [])}"
-                    )
-                except Exception as exc:
-                    log.warning(f"  [mcp] lookup failed ({exc}); proceeding without it")
+                    lookup_data = lookup_word(word)
+                except Exception:
+                    final_outcome = "lookup_failed"
+                    raise
+                log.info(
+                    f"  [lookup] meanings={len(lookup_data.get('meanings', []))}, "
+                    f"etymology={'yes' if lookup_data.get('etymology') else 'no'}, "
+                    f"cognates={lookup_data.get('english_cognates', [])}"
+                )
+                write_processing_results(
+                    img_path,
+                    content,
+                    identified_word=word,
+                    word_type=word_type,
+                    identification_result=result,
+                    lookup_result=lookup_data,
+                )
 
             # ── Step 4: Build and append flashcard ────────────────────────
-            flashcard = build_flashcard(word, word_type, mcp_data, img_path.name)
+            flashcard = build_flashcard(word, word_type, lookup_data, img_path.name)
             flashcard_output = flashcard
-            append_to_markdown(flashcard, output_md)
-            log.info(f"  [output] flashcard appended to {output_md.name}")
+            appended = append_to_markdown(flashcard, output_md)
+            final_outcome = "added" if appended else "duplicate"
+            write_processing_results(
+                img_path,
+                content,
+                identified_word=word,
+                word_type=word_type,
+                identification_result=result,
+                lookup_result=lookup_data,
+                final_outcome=final_outcome,
+            )
+            if appended:
+                log.info(f"  [output] flashcard appended to {output_md.name}")
+            else:
+                log.info(f"  [output] duplicate word '{word}', flashcard skipped")
 
             # ── Step 5: Move to output folder ─────────────────────────────
             dest = processed_dir / img_path.name
@@ -265,9 +359,24 @@ def main() -> None:
                 dest = processed_dir / f"{img_path.stem}_dup{img_path.suffix}"
             shutil.move(str(img_path), str(dest))
             log.info(f"  [done] moved to {dest}")
+
+            json_path = img_path.with_suffix(".json")
+            if json_path.exists():
+                json_dest = dest.with_suffix(".json")
+                shutil.move(str(json_path), str(json_dest))
+                log.info(f"  [done] moved JSON sidecar to {json_dest}")
             ok_count += 1
 
         except Exception as exc:
+            write_processing_results(
+                img_path,
+                content,
+                identified_word=word,
+                word_type=word_type,
+                identification_result=result,
+                lookup_result=lookup_data,
+                final_outcome=final_outcome,
+            )
             log.error(f"  [error] {exc}", exc_info=True)
             error_count += 1
         finally:
