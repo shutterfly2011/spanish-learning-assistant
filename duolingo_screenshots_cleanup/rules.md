@@ -11,31 +11,35 @@ A screenshot qualifies as a Spanish lesson if it shows **any** of the following:
 - A fill-in-the-blank exercise with a Spanish word being practiced
 - A dictionary lookup with the Spanish word on top and the definition below
 - A reading comprehension screen showing Spanish paragraphs — **this always qualifies**, even if there is no obvious exercise structure, as long as Spanish sentences are present
+- A block of spanish text, with a `[translation hint]` element (an English word/phrase callout, whether standalone or a tooltip) giving the translation hint to the subject spanish word/phrase
 
 **SpanishDict app:**
 - A screenshot from the SpanishDict app (identifiable by tabs like "Dictionary / Examples / Pronunciation", or the SpanishDict logo/branding)
 - The subject word is the `[headword/title]` element (the Spanish word being looked up)
 
-**The presence of a `[standalone translation hint]` element is always a strong signal that this is a Spanish lesson.**
+**The presence of a `[translation hint]` element is always a strong signal that this is a Spanish lesson.** This includes tooltips, popovers, or any other UI-role label the OCR step used for a short English callout that translates a single Spanish word or phrase — treat any such element as equivalent to `[translation hint]` even if it's labeled differently (e.g. "tool tip").
 
 ## 2. Identify the subject word or phrase
 
 The subject word is the **main Spanish vocabulary item being taught**, not every Spanish word present.
 
-### Priority rule: standalone translation hint
-If a `[standalone translation hint]` element is present (a single English word or short phrase appearing in isolation, not part of a sentence):
+### Priority rule: translation hint
+If a `[translation hint]` element is present, or any element that is functionally the same thing — a single English word or short phrase appearing in isolation or as a tooltip, not part of a sentence — regardless of what label the OCR step gave it, work through these steps in order:
 1. Treat it as the English translation of the vocabulary item being taught
-2. Find the Spanish word or phrase in the `[sentence]` elements whose meaning matches that English hint
-3. That Spanish word/phrase is the subject word — **never pick a `[word-bank option]` as the subject word**
+2. **First, build a list**: write out every individual Spanish word that appears anywhere in the extracted content (every sentence, dialogue, narration, or fill-in-the-blank element — not only ones literally tagged `[sentence]`). This is your only allowed candidate pool.
+3. **Then, and only then, pick from that list**: go through the list from step 2 and choose the one word whose meaning matches the English hint. Do this by comparison against the list — do not translate the English hint into Spanish independently of the list, since that produces a plausible-sounding but wrong word (e.g. hint "it indicates" translated cold gives `indica`/`indicar`, but if the list from step 2 contains `señala` and not `indica`, the correct answer is `señala` — a different verb that happens to share the meaning).
+4. **Verify before answering**: confirm your chosen word is literally present, character-for-character (ignoring conjugation), in the list you built in step 2. If it is not, you have invented a word — go back to step 2 and re-check the list instead of guessing.
+5. That Spanish word/phrase is the subject word — **never pick a `[word-bank option]` as the subject word**
+6. Word frequency/repetition elsewhere on screen is irrelevant to this rule — the hint's semantic match always wins, even if other words appear more often
 
-### Other screen types (when no standalone translation hint is present)
+### Other screen types (when no translation hint is present)
 - Word-introduction screen → the word shown prominently (usually the largest text)
 - Translation exercise → see rule below
 - Matching or tap exercise → the word highlighted or being answered
-- Reading comprehension with a translation balloon → the Spanish word the balloon points to
+- Reading comprehension with a translation balloon → this is a `[translation hint]` per the priority rule above; do not treat it as a separate case
 
-### Translation exercise rule (no standalone hint)
-When the screen shows a full sentence to translate and there is no `[standalone translation hint]`:
+### Translation exercise rule (no translation hint)
+When the screen shows a full sentence to translate and there is no `[translation hint]`:
 1. **Never return the full sentence** — the subject word is always a single word or short fixed phrase (2–3 words max)
 2. Pick the **single most specific or advanced vocabulary word** in the sentence — the word a learner is most likely still acquiring (e.g. `admirar`, `talento` rather than `el`, `ver`, `su`)
 3. Prefer nouns, verbs, and adjectives over pronouns, articles, prepositions, and conjunctions

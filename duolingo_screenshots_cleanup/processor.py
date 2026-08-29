@@ -2,29 +2,51 @@ import abc
 import base64
 import json
 import re
+import sys
+import time
 from pathlib import Path
 from typing import Optional
 
 import requests
 from PIL import Image
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from buenospanish import BuenoSpanish
+
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".webp"}
 
-_VISION_PROMPT = (
+# Small delay before each LLM call — back-to-back requests with no gap have
+# been observed to trigger failures against the backend.
+_LLM_CALL_PAUSE_SECONDS = 0.15
+PROMPTS  = [(
     "Analyse this Duolingo screenshot. For each visible text element, describe:\n"
     "1. The exact text\n"
     "2. Its UI role / position (e.g. isolated tap-target button, word-bank chip, "
-    "sentence in a paragraph, standalone translation hint at the bottom, "
+    "sentence in a paragraph, translation hint — a short English word/phrase callout "
+    "that translates a Spanish word, whether it appears standalone at the bottom of "
+    "the screen or as a small tooltip pointing into a sentence, "
     "fill-in-the-blank prompt, header/title, progress indicator)\n\n"
     "Format each element as: [ROLE] text\n\n"
+    "Use the single tag [translation hint] for ANY English word/phrase callout that "
+    "translates a Spanish word — do not use other names like 'tool tip' for this.\n\n"
     "Example output:\n"
     "[sentence] Sin embargo, esto nos permitió tener una vista del ____.\n"
-    "[standalone translation hint] however\n"
+    "[translation hint] however\n"
     "[word-bank option] sofá\n"
     "[word-bank option] cielo\n"
     "[button] CONTINUE\n\n"
     "Be precise about which words are isolated UI elements vs embedded in sentences."
+),
+(
+    "Analyze the image. "
+    "extract all visible text elements and describe their location in the image"
 )
+]
+
+_VISION_PROMPT = PROMPTS[0]
 
 _RULES_PROMPT = """\
 You are analysing content extracted from a smartphone screenshot.
@@ -37,7 +59,9 @@ You are analysing content extracted from a smartphone screenshot.
 {content}
 --- END CONTENT ---
 
-Apply the rules and respond with ONLY a valid JSON object (no other text):
+Apply the rules. First, in 2-3 short sentences, reason step by step (briefly) about which
+word matches the translation hint (if one is present), quoting the exact candidate words
+from the extracted content. Then, on a new line, respond with ONLY a valid JSON object:
 {{
   "is_spanish_lesson": <true|false>,
   "word": "<base-form Spanish word or phrase, or null>",
@@ -249,6 +273,7 @@ def is_screenshot(image_path: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 def extract_content(image_path: Path, backend: LLMBackend) -> str:
+    time.sleep(_LLM_CALL_PAUSE_SECONDS)
     return backend.vision(image_path, _VISION_PROMPT)
 
 
@@ -257,25 +282,31 @@ def extract_content(image_path: Path, backend: LLMBackend) -> str:
 # ---------------------------------------------------------------------------
 
 def process_with_rules(content: str, rules_text: str, backend: LLMBackend) -> Optional[dict]:
+    time.sleep(_LLM_CALL_PAUSE_SECONDS)
     prompt = _RULES_PROMPT.format(rules=rules_text, content=content)
     return _parse_json(backend.text(prompt))
 
 
 # ---------------------------------------------------------------------------
-# Step 3b — MCP word lookup
+# Step 3b — BuenoSpanish lookup
 # ---------------------------------------------------------------------------
 
-def lookup_word(word: str, mcp_server_url: str) -> dict:
-    url = f"{mcp_server_url.rstrip('/')}/lookup/{word}"
-    r = requests.get(url, timeout=15)
-    r.raise_for_status()
-    data = r.json()
-    if "error" in data:
-        raise RuntimeError(data["error"])
+_BUENO_SPANISH = BuenoSpanish(timeout=15)
+
+
+def lookup_word(word: str) -> dict:
+    entry = _BUENO_SPANISH.lookup(word)
     return {
-        "meanings": data.get("meanings", []),
-        "etymology": data.get("etymology") or "",
-        "english_cognates": data.get("english_cognates", []),
+        "meanings": [
+            {
+                "definition": meaning.definition,
+                "example_es": meaning.example_es,
+                "example_en": meaning.example_en,
+            }
+            for meaning in entry.meanings
+        ],
+        "etymology": entry.etymology or "",
+        "english_cognates": entry.english_cognates,
     }
 
 
@@ -283,12 +314,36 @@ def lookup_word(word: str, mcp_server_url: str) -> dict:
 # Step 4 — Flashcard formatting
 # ---------------------------------------------------------------------------
 
-def _trim(text: str, max_chars: int = 160) -> str:
+_ETYM_INTRO_RE = re.compile(
+    r"^The Spanish \w+ '[^']*'\s*\(meaning '[^']*'\)\s*"
+    r"(?:traces back to|has an interesting (?:etymology|history|origin)(?: that)?)\s*",
+    re.IGNORECASE,
+)
+
+
+def _clean_etymology(text: str) -> str:
+    """Strip the boilerplate intro ("The Spanish word 'X' (meaning 'Y')
+    traces back to / has an interesting etymology that...") so the summary
+    goes straight to the substance."""
     if not text:
         return ""
-    end = text.find(". ")
-    sentence = text[: end + 1] if end != -1 else text
-    return sentence[:max_chars].rstrip(" .,")
+    text = _ETYM_INTRO_RE.sub("", text).strip()
+    return text[:1].upper() + text[1:] if text else text
+
+
+def _trim(text: str, max_chars: int = 220) -> str:
+    if not text:
+        return ""
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+    out = ""
+    for sentence in sentences:
+        candidate = f"{out} {sentence}".strip() if out else sentence
+        if out and len(candidate) > max_chars:
+            break
+        out = candidate
+        if len(out) >= max_chars:
+            break
+    return out.rstrip(" .,")
 
 
 def _definition_line(word_type: str, meanings: list) -> str:
@@ -302,11 +357,11 @@ def _definition_line(word_type: str, meanings: list) -> str:
     return raw
 
 
-def build_flashcard(word: str, word_type: str, mcp_data: dict, source_filename: Optional[str] = None) -> str:
+def build_flashcard(word: str, word_type: str, lookup_data: dict, source_filename: Optional[str] = None) -> str:
     word_type = (word_type or "").lower()
     lines: list[str] = []
 
-    meanings = mcp_data.get("meanings", [])
+    meanings = lookup_data.get("meanings", [])
     definition = _definition_line(word_type, meanings)
     type_label = word_type if word_type not in ("", "null") else ""
     if definition and type_label:
@@ -316,11 +371,11 @@ def build_flashcard(word: str, word_type: str, mcp_data: dict, source_filename: 
     elif type_label:
         lines.append(f"({type_label})")
 
-    etymology = mcp_data.get("etymology", "")
+    etymology = lookup_data.get("etymology", "")
     if etymology and etymology != "No etymology information available":
-        lines.append(f"Etym: {_trim(etymology)}")
+        lines.append(f"Etym: {_trim(_clean_etymology(etymology))}")
 
-    cognates = mcp_data.get("english_cognates", [])
+    cognates = lookup_data.get("english_cognates", [])
     if cognates:
         lines.append(f"Cognates: {', '.join(cognates[:5])}")
 
@@ -335,7 +390,20 @@ def build_flashcard(word: str, word_type: str, mcp_data: dict, source_filename: 
 # Step 4 (cont.) — Append to markdown
 # ---------------------------------------------------------------------------
 
-def append_to_markdown(flashcard: str, output_path: Path) -> None:
+def append_to_markdown(flashcard: str, output_path: Path) -> bool:
+    card_lines = flashcard.splitlines()
+    word = card_lines[1].strip() if len(card_lines) > 1 else ""
+    if output_path.exists() and word:
+        existing_lines = output_path.read_text(encoding="utf-8").splitlines()
+        existing_words = {
+            existing_lines[index + 1].strip()
+            for index, line in enumerate(existing_lines)
+            if line.strip() == "---" and index + 1 < len(existing_lines)
+        }
+        if word in existing_words:
+            return False
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "a", encoding="utf-8") as f:
         f.write(flashcard + "\n")
+    return True

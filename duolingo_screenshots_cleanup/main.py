@@ -22,6 +22,7 @@ import shutil
 import sys
 from pathlib import Path
 
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -93,7 +94,10 @@ def get_ocr_content(image_path: Path, backend, log: logging.Logger) -> str:
     if json_path.exists():
         results = json.loads(json_path.read_text(encoding="utf-8"))
         content = results.get("ocr_result")
-        if isinstance(content, str):
+        # An empty cached result means a prior attempt failed (dead backend or an
+        # empty model response) — retry instead of treating it as a valid hit,
+        # otherwise the file gets stuck reporting the same failure forever.
+        if isinstance(content, str) and content.strip():
             log.info(f"  [vision] using existing JSON sidecar {json_path.name}")
             return content
 
@@ -231,100 +235,118 @@ def main() -> None:
             f for f in input_path.iterdir()
             if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS
         )
+
+    batch_size = int(os.getenv("BATCH_SIZE", "12") or "0")
+    if batch_size > 0:
+        batches = [images[i:i + batch_size] for i in range(0, len(images), batch_size)]
+    else:
+        batches = [images] if images else []
+
     log.info(f"Found {len(images)} image(s) to process")
+    if len(batches) > 1:
+        log.info(f"Processing in {len(batches)} batch(es) of up to {batch_size}")
 
     ok_count = skipped_count = error_count = 0
 
-    for img_path in images:
-        log.info(f"--- {img_path.name}")
-        vision_response = ""
-        flashcard_output = ""
-        content = ""
-        result = None
-        word = ""
-        word_type = ""
-        lookup_data: dict = {}
-        final_outcome = "error"
+    # Two passes per batch, one per model, so the vision model and text model
+    # each load onto the GPU once per batch instead of swapping per image.
+    for batch_num, batch_images in enumerate(batches, start=1):
+        if len(batches) > 1:
+            log.info("=" * 60)
+            log.info(f"Batch {batch_num}/{len(batches)} — {len(batch_images)} image(s)")
 
-        try:
-            # ── Step 1: Is it a screenshot? ──────────────────────────────
-            if not is_screenshot(img_path):
-                log.info("  [skip] not a screenshot (camera EXIF present)")
-                write_processing_results(img_path, "", final_outcome="not_screenshot")
-                skipped_count += 1
-                continue
+        pending: list[tuple[Path, str]] = []
 
-            # ── Step 2: Extract content via vision model ─────────────────
-            content = get_ocr_content(img_path, backend, log)
-            vision_response = content
-            if not content.strip():
-                log.warning("  [skip] vision model returned empty content")
-                write_processing_results(img_path, content, final_outcome="empty_ocr")
-                skipped_count += 1
-                continue
-            print(f"\n  ── OCR result ──\n{content}\n  ────────────────")
+        log.info("=" * 60)
+        log.info(f"Stage 1/2 — vision extraction ({config['vision_model']})")
+        for img_path in batch_images:
+            log.info(f"--- {img_path.name}")
+            try:
+                if not is_screenshot(img_path):
+                    log.info("  [skip] not a screenshot (camera EXIF present)")
+                    write_processing_results(img_path, "", final_outcome="not_screenshot")
+                    skipped_count += 1
+                    append_csv_row(csv_path, img_path.name, "", "")
+                    continue
 
-            # ── Step 3: Apply rules ───────────────────────────────────────
-            log.info("  [rules] identifying word and type...")
-            result = process_with_rules(content, rules_text, backend)
-            write_processing_results(
-                img_path,
-                content,
-                identification_result=result,
-                final_outcome="identification_failed" if not result else "",
-            )
-            if not result:
-                log.warning("  [skip] could not parse rules response")
-                skipped_count += 1
-                continue
-            if not result.get("is_spanish_lesson"):
-                log.info("  [skip] not identified as a Spanish lesson")
+                content = get_ocr_content(img_path, backend, log)
+                if not content.strip():
+                    log.warning("  [skip] vision model returned empty content")
+                    write_processing_results(img_path, content, final_outcome="empty_ocr")
+                    skipped_count += 1
+                    append_csv_row(csv_path, img_path.name, content, "")
+                    continue
+                print(f"\n  ── OCR result ──\n{content}\n  ────────────────")
+                pending.append((img_path, content))
+
+            except requests.exceptions.RequestException as exc:
+                log.error(f"  [fatal] vision backend unreachable: {exc}")
+                log.error(
+                    "  Aborting run instead of burning through the remaining images "
+                    "against a dead backend — no .json sidecar was written for this "
+                    "image, so it will be retried on the next run."
+                )
+                append_csv_row(csv_path, img_path.name, "", "")
+                sys.exit(1)
+            except Exception as exc:
+                write_processing_results(img_path, "", final_outcome="error")
+                log.error(f"  [error] {exc}", exc_info=True)
+                error_count += 1
+                append_csv_row(csv_path, img_path.name, "", "")
+
+        log.info("=" * 60)
+        log.info(f"Stage 2/2 — rule-based identification ({config['text_model']})")
+        for img_path, content in pending:
+            log.info(f"--- {img_path.name}")
+            flashcard_output = ""
+            result = None
+            word = ""
+            word_type = ""
+            lookup_data: dict = {}
+            final_outcome = "error"
+
+            try:
+                # ── Step 3: Apply rules ───────────────────────────────────────
+                log.info("  [rules] identifying word and type...")
+                result = process_with_rules(content, rules_text, backend)
                 write_processing_results(
                     img_path,
                     content,
                     identification_result=result,
-                    final_outcome="not_spanish_lesson",
+                    final_outcome="identification_failed" if not result else "",
                 )
-                skipped_count += 1
-                continue
+                if not result:
+                    log.warning("  [skip] could not parse rules response")
+                    skipped_count += 1
+                    continue
+                if not result.get("is_spanish_lesson"):
+                    log.info("  [skip] not identified as a Spanish lesson")
+                    write_processing_results(
+                        img_path,
+                        content,
+                        identification_result=result,
+                        final_outcome="not_spanish_lesson",
+                    )
+                    skipped_count += 1
+                    continue
 
-            word = (result.get("word") or "").strip()
-            word_type = (result.get("word_type") or "").strip()
-            if not word or word.lower() == "null":
-                log.info("  [skip] no subject word identified")
-                write_processing_results(
-                    img_path,
-                    content,
-                    word_type=word_type,
-                    identification_result=result,
-                    final_outcome="no_word",
-                )
-                skipped_count += 1
-                continue
+                word = (result.get("word") or "").strip()
+                word_type = (result.get("word_type") or "").strip()
+                if not word or word.lower() == "null":
+                    log.info("  [skip] no subject word identified")
+                    write_processing_results(
+                        img_path,
+                        content,
+                        word_type=word_type,
+                        identification_result=result,
+                        final_outcome="no_word",
+                    )
+                    skipped_count += 1
+                    continue
 
-            log.info(f"  word='{word}'  type='{word_type}'")
+                log.info(f"  word='{word}'  type='{word_type}'")
 
-            # ── Step 3b: BuenoSpanish lookup ─────────────────────────────
-            write_processing_results(
-                img_path,
-                content,
-                identified_word=word,
-                word_type=word_type,
-                identification_result=result,
-                lookup_result=lookup_data,
-            )
-            if result.get("needs_lookup", True):
-                log.info(f"  [lookup] looking up '{word}'...")
-                try:
-                    lookup_data = lookup_word(word)
-                except Exception:
-                    final_outcome = "lookup_failed"
-                    raise
-                log.info(
-                    f"  [lookup] meanings={len(lookup_data.get('meanings', []))}, "
-                    f"etymology={'yes' if lookup_data.get('etymology') else 'no'}, "
-                    f"cognates={lookup_data.get('english_cognates', [])}"
-                )
+                # ── Step 3b: BuenoSpanish lookup ─────────────────────────────
                 write_processing_results(
                     img_path,
                     content,
@@ -333,54 +355,82 @@ def main() -> None:
                     identification_result=result,
                     lookup_result=lookup_data,
                 )
+                if result.get("needs_lookup", True):
+                    log.info(f"  [lookup] looking up '{word}'...")
+                    try:
+                        lookup_data = lookup_word(word)
+                    except Exception:
+                        final_outcome = "lookup_failed"
+                        raise
+                    log.info(
+                        f"  [lookup] meanings={len(lookup_data.get('meanings', []))}, "
+                        f"etymology={'yes' if lookup_data.get('etymology') else 'no'}, "
+                        f"cognates={lookup_data.get('english_cognates', [])}"
+                    )
+                    write_processing_results(
+                        img_path,
+                        content,
+                        identified_word=word,
+                        word_type=word_type,
+                        identification_result=result,
+                        lookup_result=lookup_data,
+                    )
 
-            # ── Step 4: Build and append flashcard ────────────────────────
-            flashcard = build_flashcard(word, word_type, lookup_data, img_path.name)
-            flashcard_output = flashcard
-            appended = append_to_markdown(flashcard, output_md)
-            final_outcome = "added" if appended else "duplicate"
-            write_processing_results(
-                img_path,
-                content,
-                identified_word=word,
-                word_type=word_type,
-                identification_result=result,
-                lookup_result=lookup_data,
-                final_outcome=final_outcome,
-            )
-            if appended:
-                log.info(f"  [output] flashcard appended to {output_md.name}")
-            else:
-                log.info(f"  [output] duplicate word '{word}', flashcard skipped")
+                # ── Step 4: Build and append flashcard ────────────────────────
+                flashcard = build_flashcard(word, word_type, lookup_data, img_path.name)
+                flashcard_output = flashcard
+                appended = append_to_markdown(flashcard, output_md)
+                final_outcome = "added" if appended else "duplicate"
+                write_processing_results(
+                    img_path,
+                    content,
+                    identified_word=word,
+                    word_type=word_type,
+                    identification_result=result,
+                    lookup_result=lookup_data,
+                    final_outcome=final_outcome,
+                )
+                if appended:
+                    log.info(f"  [output] flashcard appended to {output_md.name}")
+                else:
+                    log.info(f"  [output] duplicate word '{word}', flashcard skipped")
 
-            # ── Step 5: Move to output folder ─────────────────────────────
-            dest = processed_dir / img_path.name
-            if dest.exists():
-                dest = processed_dir / f"{img_path.stem}_dup{img_path.suffix}"
-            shutil.move(str(img_path), str(dest))
-            log.info(f"  [done] moved to {dest}")
+                # ── Step 5: Move to output folder ─────────────────────────────
+                dest = processed_dir / img_path.name
+                if dest.exists():
+                    dest = processed_dir / f"{img_path.stem}_dup{img_path.suffix}"
+                shutil.move(str(img_path), str(dest))
+                log.info(f"  [done] moved to {dest}")
 
-            json_path = img_path.with_suffix(".json")
-            if json_path.exists():
-                json_dest = dest.with_suffix(".json")
-                shutil.move(str(json_path), str(json_dest))
-                log.info(f"  [done] moved JSON sidecar to {json_dest}")
-            ok_count += 1
+                json_path = img_path.with_suffix(".json")
+                if json_path.exists():
+                    json_dest = dest.with_suffix(".json")
+                    shutil.move(str(json_path), str(json_dest))
+                    log.info(f"  [done] moved JSON sidecar to {json_dest}")
+                ok_count += 1
 
-        except Exception as exc:
-            write_processing_results(
-                img_path,
-                content,
-                identified_word=word,
-                word_type=word_type,
-                identification_result=result,
-                lookup_result=lookup_data,
-                final_outcome=final_outcome,
-            )
-            log.error(f"  [error] {exc}", exc_info=True)
-            error_count += 1
-        finally:
-            append_csv_row(csv_path, img_path.name, vision_response, flashcard_output)
+            except requests.exceptions.RequestException as exc:
+                log.error(f"  [fatal] backend unreachable: {exc}")
+                log.error(
+                    "  Aborting run instead of burning through the remaining images "
+                    "against a dead backend — this image's OCR sidecar stays cached "
+                    "and identification will be retried on the next run."
+                )
+                sys.exit(1)
+            except Exception as exc:
+                write_processing_results(
+                    img_path,
+                    content,
+                    identified_word=word,
+                    word_type=word_type,
+                    identification_result=result,
+                    lookup_result=lookup_data,
+                    final_outcome=final_outcome,
+                )
+                log.error(f"  [error] {exc}", exc_info=True)
+                error_count += 1
+            finally:
+                append_csv_row(csv_path, img_path.name, content, flashcard_output)
 
     log.info("=" * 60)
     log.info(
